@@ -289,3 +289,115 @@ class BosSequenceTests(unittest.TestCase):
     def test_single_break_lookup_would_undercount_a_long_series(self):
         bars = self._real_h1()
         self.assertLess(1, len(detect_bos_sequence(bars, span=2)))
+
+
+class SweepStalenessTests(unittest.TestCase):
+    """Regression: a sweep that can no longer develop into a setup must be rejected."""
+
+    M5 = 300
+
+    def _candidates(self):
+        # Two qualifying sweeps on the same confirmed pivot, 60 minutes apart.
+        from research.smc_core import LiquiditySweep
+
+        return [
+            LiquiditySweep(Direction.BUY, 100.0, 97.0, 1_000, 1_000 + 300, "old"),
+            LiquiditySweep(Direction.BUY, 100.0, 97.5, 4_600, 4_600 + 300, "new"),
+        ]
+
+    def test_sweep_older_than_the_development_window_is_rejected(self):
+        from research.smc_core import select_live_sweep
+
+        now = 4_600 + 300  # server time right after the newer sweep confirms
+        chosen = select_live_sweep(self._candidates(), now, window_seconds=12 * 300)
+        self.assertIsNotNone(chosen)
+        self.assertEqual(chosen.setup_id, "new")
+
+    def test_all_candidates_stale_yields_no_setup_rather_than_an_expired_one(self):
+        from research.smc_core import select_live_sweep
+
+        # 5 hours after the last confirmation: nothing can still develop.
+        chosen = select_live_sweep(self._candidates(), 4_600 + 300 + 5 * 3600, window_seconds=12 * 300)
+        self.assertIsNone(chosen,
+                          "a stale sweep must yield no candidate so the EA waits for a new one")
+
+    def test_most_recent_live_confirmation_wins_over_an_older_live_one(self):
+        from research.smc_core import select_live_sweep
+
+        now = 4_600 + 300 + 60  # both are still live
+        chosen = select_live_sweep(self._candidates(), now, window_seconds=12 * 300)
+        self.assertEqual(chosen.setup_id, "new")
+
+    def test_a_future_dated_candidate_is_not_live(self):
+        from research.smc_core import LiquiditySweep, select_live_sweep
+
+        future = LiquiditySweep(Direction.BUY, 100.0, 97.0, 99_999, 99_999 + 300, "future")
+        self.assertIsNone(select_live_sweep([future], 1_000, window_seconds=12 * 300))
+
+    def test_invalid_window_is_rejected(self):
+        from research.smc_core import select_live_sweep
+
+        with self.assertRaises(ValueError):
+            select_live_sweep(self._candidates(), 5_000, window_seconds=0)
+
+
+class TargetLiquidityFreshnessTests(unittest.TestCase):
+    """Regression: an already-traded-through level is not remaining liquidity.
+
+    Each rejection test carries a control case on the same bars truncated before the
+    sweep, proving the pivot exists and would have been selected without the guard.
+    """
+
+    SWEPT_BUY = [
+        bar(0, 100, 101, 99, 100), bar(1, 100, 109, 100, 108), bar(2, 108, 112, 107, 110),
+        bar(3, 110, 111, 106, 107), bar(4, 107, 108, 105, 106), bar(5, 106, 115, 105, 114),
+        bar(6, 114, 116, 113, 115),
+    ]
+    BUY_INTACT = [
+        bar(0, 100, 101, 99, 100), bar(1, 100, 109, 100, 108), bar(2, 108, 112, 107, 110),
+        bar(3, 110, 111, 106, 107), bar(4, 107, 108, 105, 106), bar(5, 106, 111, 105, 110),
+        bar(6, 110, 111, 109, 110),
+    ]
+    SWEPT_SELL = [
+        bar(0, 100, 101, 99, 100), bar(1, 100, 101, 95, 96), bar(2, 96, 97, 90, 91),
+        bar(3, 94, 95, 92, 93), bar(4, 93, 94, 91, 92), bar(5, 92, 93, 85, 86),
+        bar(6, 86, 87, 84, 85),
+    ]
+    SELL_INTACT = [
+        bar(0, 100, 101, 99, 100), bar(1, 100, 101, 95, 96), bar(2, 96, 97, 90, 91),
+        bar(3, 94, 95, 92, 93), bar(4, 93, 94, 91, 92), bar(5, 92, 93, 91, 92),
+    ]
+
+    def test_control_the_pivot_would_have_been_selected_without_the_guard(self):
+        from research.smc_core import next_unswept_liquidity
+
+        self.assertEqual(next_unswept_liquidity(self.BUY_INTACT, 100.0, Direction.BUY, 2, 0.1), 112.0)
+        self.assertEqual(next_unswept_liquidity(self.SELL_INTACT, 100.0, Direction.SELL, 2, 0.1), 90.0)
+
+    def test_buy_target_rejects_a_swing_high_already_traded_through(self):
+        from research.smc_core import next_unswept_liquidity
+
+        self.assertIsNone(next_unswept_liquidity(self.SWEPT_BUY, 100.0, Direction.BUY, 2, 0.1))
+
+    def test_sell_target_rejects_a_swing_low_already_traded_through(self):
+        from research.smc_core import next_unswept_liquidity
+
+        self.assertIsNone(next_unswept_liquidity(self.SWEPT_SELL, 100.0, Direction.SELL, 2, 0.1))
+
+    def test_returns_the_nearest_intact_level_not_the_farthest(self):
+        from research.smc_core import next_unswept_liquidity
+
+        bars = [
+            bar(0, 100, 101, 99, 100), bar(1, 100, 105, 100, 104), bar(2, 104, 110, 103, 109),
+            bar(3, 109, 109, 104, 105), bar(4, 105, 106, 100, 101), bar(5, 101, 108, 100, 107),
+            bar(6, 107, 109, 106, 108),
+        ]
+        self.assertEqual(next_unswept_liquidity(bars, 100.0, Direction.BUY, 2, 0.1), 110.0)
+
+    def test_invalid_inputs_fail_closed(self):
+        from research.smc_core import next_unswept_liquidity
+
+        with self.assertRaises(ValueError):
+            next_unswept_liquidity(self.BUY_INTACT, 100.0, Direction.BUY, 2, 0.0)
+        with self.assertRaises(ValueError):
+            next_unswept_liquidity(self.BUY_INTACT, 0.0, Direction.BUY, 2, 0.1)

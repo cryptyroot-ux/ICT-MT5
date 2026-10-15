@@ -541,3 +541,80 @@ def detect_bos_sequence(bars: Sequence[Bar], span: int = 2) -> list[StructureBre
         if index in low_by_confirmation:
             latest_low = low_by_confirmation[index][-1]
     return events
+
+
+def select_live_sweep(
+    candidates: Sequence[LiquiditySweep], now: int, window_seconds: int
+) -> LiquiditySweep | None:
+    """Choose the sweep that can still develop into a setup, or nothing.
+
+    A sweep is live only while its remaining development window has not elapsed.
+    Stale sweeps are rejected rather than returned so the caller can wait for a new
+    event instead of immediately building a setup that would expire. Among live
+    candidates the most recent confirmation wins, consistent with how the latest
+    structural break sets bias.
+    """
+    if window_seconds <= 0:
+        raise ValueError("window_seconds must be positive")
+    live = [
+        candidate
+        for candidate in candidates
+        if candidate.confirmation_time <= now <= candidate.confirmation_time + window_seconds
+    ]
+    if not live:
+        return None
+    return max(live, key=lambda candidate: candidate.confirmation_time)
+
+
+def _is_pivot_high(bars: Sequence[Bar], index: int, span: int) -> bool:
+    window = bars[index - span : index + span + 1]
+    if len(window) != span * 2 + 1 or not all(b.complete for b in window):
+        return False
+    centre = bars[index]
+    return all(centre.high > b.high for b in window if b is not centre)
+
+
+def _is_pivot_low(bars: Sequence[Bar], index: int, span: int) -> bool:
+    window = bars[index - span : index + span + 1]
+    if len(window) != span * 2 + 1 or not all(b.complete for b in window):
+        return False
+    centre = bars[index]
+    return all(centre.low < b.low for b in window if b is not centre)
+
+
+def next_unswept_liquidity(
+    bars: Sequence[Bar], entry: float, direction: Direction, span: int, tick_size: float
+) -> float | None:
+    """Nearest confirmed opposing pivot above/below entry that is still intact.
+
+    A level that price has already traded through after the pivot was confirmed is
+    no longer resting liquidity, so it cannot be used as a target.
+    """
+    if tick_size <= 0 or entry <= 0 or direction not in (Direction.BUY, Direction.SELL):
+        raise ValueError("invalid entry, tick size, or direction")
+    if len(bars) < span * 2 + 1:
+        return None
+    closed_end = max(index for index, b in enumerate(bars) if b.complete)
+    best: float | None = None
+    for index in range(span, closed_end - span + 1):
+        if bars[index].time > bars[closed_end].time:
+            continue
+        if direction is Direction.BUY and _is_pivot_high(bars, index, span):
+            level = bars[index].high
+            if level <= entry + tick_size:
+                continue
+            intact = not any(
+                bars[k].complete and bars[k].high >= level for k in range(index + 1, closed_end + 1)
+            )
+            if intact and (best is None or level < best):
+                best = level
+        elif direction is Direction.SELL and _is_pivot_low(bars, index, span):
+            level = bars[index].low
+            if level >= entry - tick_size:
+                continue
+            intact = not any(
+                bars[k].complete and bars[k].low <= level for k in range(index + 1, closed_end + 1)
+            )
+            if intact and (best is None or level > best):
+                best = level
+    return best

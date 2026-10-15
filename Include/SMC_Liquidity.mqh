@@ -40,6 +40,22 @@ private:
       return (closed_end>=SMC_SWING_SPAN*2+1);
      }
 
+   // A level that price already traded through after its pivot was confirmed is no
+   // longer resting liquidity and cannot serve as a target.
+   bool LevelStillResting(const MqlRates &rates[],const int confirmation_index,
+                          const int closed_end,const double level,
+                          const SMC_DIRECTION direction) const
+     {
+      for(int probe=confirmation_index;probe<=closed_end;probe++)
+        {
+         if(direction==SMC_DIRECTION_BUY && rates[probe].high>=level)
+            return false;
+         if(direction==SMC_DIRECTION_SELL && rates[probe].low<=level)
+            return false;
+        }
+      return true;
+     }
+
 public:
                      CSMCLiquidity() { m_symbol=""; }
 
@@ -70,6 +86,15 @@ public:
       const int timeframe_seconds=PeriodSeconds(SMC_EXECUTION_TF);
       if(timeframe_seconds<=0)
          return false;
+      datetime now=TimeTradeServer();
+      if(now<=0) now=TimeCurrent();
+      // Explicit causal bound: BOS -> sweep, and sweep -> server now.
+      if(after_time<=0 || after_time>now)
+         return false;
+      const datetime stale_after=now-(SMC_SETUP_DEVELOPMENT_BARS*timeframe_seconds);
+      if(after_time<stale_after)
+         return false; // The bias itself is too old to still develop a setup.
+
       datetime best_confirmation=0;
       bool ambiguous=false;
       int matched=0;
@@ -122,7 +147,15 @@ public:
                continue;
 
             const datetime confirmation_time=rates[reclaim_index].time+timeframe_seconds;
-            if(best_confirmation==0 || confirmation_time<best_confirmation)
+            // Staleness bound: a sweep that can no longer develop into a setup is
+            // rejected here so the caller waits for a newer event instead of
+            // building a setup that expires immediately.
+            if(confirmation_time<after_time || confirmation_time>now ||
+               confirmation_time<now-(SMC_SETUP_DEVELOPMENT_BARS*timeframe_seconds))
+               continue;
+            // Among live candidates the most recent confirmation wins, consistent
+            // with how the latest confirmed break sets bias.
+            if(best_confirmation==0 || confirmation_time>best_confirmation)
               {
                best_confirmation=confirmation_time;
                output.valid=true;
@@ -188,6 +221,8 @@ public:
             continue;
          if((direction==SMC_DIRECTION_BUY && candidate<=entry) ||
             (direction==SMC_DIRECTION_SELL && candidate>=entry))
+            continue;
+         if(!LevelStillResting(rates,confirmation_index,closed_end,candidate,direction))
             continue;
          const double distance=MathAbs(candidate-entry);
          if(distance<best_distance)

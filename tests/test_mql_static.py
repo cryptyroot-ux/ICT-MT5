@@ -205,3 +205,52 @@ class StaleInstructionGuardTests(unittest.TestCase):
             if "+0.25R" in text or "0.25R" in text:
                 with self.subTest(file=name):
                     self.assertRegex(text, r"never be relaxed|must not be relaxed|never be averaged")
+
+
+class LiquidityGuardParityTests(unittest.TestCase):
+    """Structural parity: the MQL5 must carry the same two guards as the model.
+
+    These are static presence checks, not behaviour tests. MQL5 cannot be executed
+    here, so parity is asserted structurally and labelled as such in the docs.
+    """
+
+    LIQ = REPO / "Include" / "SMC_Liquidity.mqh"
+    EA = REPO / "Experts" / "SMC_H1M5_SweepFVG.mq5"
+
+    def test_sweep_detection_has_an_explicit_upper_bound_to_server_now(self):
+        text = self.LIQ.read_text(encoding="utf-8")
+        self.assertIn("SMC_SETUP_DEVELOPMENT_BARS", text)
+        self.assertIn("TimeTradeServer", text)
+        self.assertIn("now-(SMC_SETUP_DEVELOPMENT_BARS*timeframe_seconds)", text)
+
+    def test_sweep_detection_prefers_the_newest_live_confirmation(self):
+        text = self.LIQ.read_text(encoding="utf-8")
+        self.assertIn("confirmation_time>best_confirmation", text)
+
+    def test_target_lookup_rejects_already_swept_levels(self):
+        text = self.LIQ.read_text(encoding="utf-8")
+        # The guard must be a named helper AND must actually be consulted by the
+        # target lookup; asserting only the identifier would survive its removal.
+        self.assertIn("bool LevelStillResting(", text)
+        self.assertIn("if(!LevelStillResting(rates,confirmation_index,closed_end,candidate,direction))",
+                      text)
+        # The helper must scan bars from the pivot confirmation to the last closed bar.
+        self.assertRegex(text, r"for\(int probe=confirmation_index;probe<=closed_end;probe\+\+\)")
+        self.assertIn("rates[probe].high>=level", text)
+        self.assertIn("rates[probe].low<=level", text)
+
+    def test_bos_is_consumed_only_after_a_sweep_is_confirmed(self):
+        text = self.EA.read_text(encoding="utf-8")
+        bias_at = text.index('if(g_smc_setup.state==SMC_WAIT_BIAS)')
+        sweep_at = text.index('if(g_smc_setup.state==SMC_WAIT_SWEEP)')
+        consume_calls = [m.start() for m in re.finditer(r"SaveConsumedBias\(", text)]
+        # One definition and exactly one call site, and the call must sit in the
+        # WAIT_SWEEP branch, after the sweep is confirmed.
+        self.assertEqual(len(consume_calls), 2, "expected one definition and one call")
+        self.assertGreater(consume_calls[1], sweep_at)
+        self.assertNotIn("SaveConsumedBias(", text[bias_at:sweep_at])
+
+    def test_stale_bias_resets_so_a_newer_bos_can_seed(self):
+        text = self.EA.read_text(encoding="utf-8")
+        self.assertIn("bias_stale_reset", text)
+        self.assertRegex(text, r"h1_bos_confirmation\+SMC_SETUP_DEVELOPMENT_BARS")

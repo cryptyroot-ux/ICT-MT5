@@ -243,12 +243,9 @@ void HandleNewClosedM5()
       g_smc_setup.h1_bos_time=bos.pivot_time;
       g_smc_setup.h1_bos_confirmation=bos.confirmation_time;
       g_smc_setup.setup_start_time=now;
-      if(!SaveConsumedBias(bos.confirmation_time))
-        {
-         g_smc_logger.Write(g_smc_setup,"setup_rejected","WAIT_BIAS",0.0,
-                            InpSMCRiskPercent,0,"cannot_persist_consumed_H1_BOS_cursor");
-         return;
-        }
+      // The BOS is NOT consumed here. It is consumed only once a sweep makes the
+      // setup concrete, so a restart while still waiting for a sweep cannot strand
+      // the bias and block every newer sweep under the same BOS.
       LogTransition(SMC_WAIT_SWEEP,bos.confirmation_time,"bias_confirmed",
                     "completed_H1_close_broke_confirmed_swing");
       return;
@@ -262,9 +259,33 @@ void HandleNewClosedM5()
 
    if(g_smc_setup.state==SMC_WAIT_SWEEP)
      {
+      const int timeframe_seconds=PeriodSeconds(SMC_EXECUTION_TF);
+      if(timeframe_seconds<=0)
+        {
+         InvalidateCurrentSetup("M5_period_seconds_unavailable");
+         return;
+        }
+      // If this BOS can no longer develop into a setup, stop waiting on it and let a
+      // newer confirmed BOS seed the next setup.
+      if(now>g_smc_setup.h1_bos_confirmation+SMC_SETUP_DEVELOPMENT_BARS*timeframe_seconds)
+        {
+         LogTransition(SMC_INVALIDATED,now,"bias_stale_reset",
+                       "H1_BOS_too_old_to_develop_a_setup_waiting_for_a_newer_BOS");
+         return;
+        }
       SMC_SWEEP_EVENT sweep;
       if(!g_smc_liquidity.DetectSweep(g_smc_setup.direction,g_smc_setup.h1_bos_confirmation,sweep))
+        {
+         if(now>g_smc_setup.sweep_confirmation+2*timeframe_seconds && g_smc_setup.sweep_confirmation>0)
+            g_smc_setup.sweep_confirmation=0;
          return;
+        }
+      if(!SaveConsumedBias(g_smc_setup.h1_bos_confirmation))
+        {
+         g_smc_logger.Write(g_smc_setup,"setup_rejected","WAIT_SWEEP",0.0,
+                            InpSMCRiskPercent,0,"cannot_persist_consumed_H1_BOS_cursor");
+         return;
+        }
       g_smc_setup.setup_id=sweep.setup_id;
       g_smc_setup.liquidity_level=sweep.level;
       g_smc_setup.sweep_extreme=sweep.extreme;
@@ -278,7 +299,7 @@ void HandleNewClosedM5()
    if(g_smc_setup.state==SMC_WAIT_DISPLACEMENT_CHOCH)
      {
       const datetime setup_timeout=g_smc_setup.sweep_confirmation+
-                                   12*PeriodSeconds(SMC_EXECUTION_TF);
+                                   SMC_SETUP_DEVELOPMENT_BARS*PeriodSeconds(SMC_EXECUTION_TF);
       MqlRates latest;
       if(!LoadLatestClosedM5(latest))
          return;

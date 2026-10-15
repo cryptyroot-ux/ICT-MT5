@@ -9,6 +9,12 @@
 #define SMC_MAX_LIQUIDITY_AGE_BARS 100
 #define SMC_SWEEP_THRESHOLD_TICKS 2.0
 #define SMC_MAX_RECLAIM_BARS 3
+// A sweep is only usable while the setup can still reach its displacement/FVG/order
+// states. Beyond this age the sweep is stale and must be rejected, not returned.
+#define SMC_SETUP_DEVELOPMENT_BARS 12
+// The H1 BOS is only consumed once a sweep makes the setup concrete. Until then the
+// same BOS stays eligible so a restart cannot strand a bias that has no live sweep.
+#define SMC_BIAS_CONSUMED_ON_SWEEP_CONFIRMATION 1
 #define SMC_ATR_PERIOD 14
 #define SMC_MIN_NET_RR 3.0
 #define SMC_PENDING_EXPIRY_BARS 6
