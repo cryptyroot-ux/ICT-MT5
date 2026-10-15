@@ -168,7 +168,7 @@ public:
    // Call this at init to set gold mode
    void SetSymbol(const string symbol)
      {
-      m_isXAUUSD=(StringFind(symbol,\"XAU\")>=0);
+      m_isXAUUSD=(StringFind(symbol,"XAU")>=0);
      }
 
    void Refresh()
@@ -203,7 +203,7 @@ public:
          m_tradeTakenInSession=false;
         }
 
-      const datetime todayKey=(datetime)StringToTime(StringFormat(\"%04d.%02d.%02d 00:00:00\",dt.year,dt.mon,dt.day));
+      const datetime todayKey=(datetime)StringToTime(StringFormat("%04d.%02d.%02d 00:00:00",dt.year,dt.mon,dt.day));
       if(todayKey!=m_lastSessionDate)
         {
          m_lastSessionDate=todayKey;
@@ -313,11 +313,11 @@ public:
      {
       switch(m_activeSession)
         {
-         case SESSION_LONDON:        return \"LONDON\";
-         case SESSION_NY_OPEN:       return \"NY_OPEN\";
-         case SESSION_LONDON_CLOSE:  return \"LONDON_CLOSE\";
-         case SESSION_NY_CLOSE:      return \"NY_CLOSE\";
-         default:                    return \"NONE\";
+         case SESSION_LONDON:        return "LONDON";
+         case SESSION_NY_OPEN:       return "NY_OPEN";
+         case SESSION_LONDON_CLOSE:  return "LONDON_CLOSE";
+         case SESSION_NY_CLOSE:      return "NY_CLOSE";
+         default:                    return "NONE";
         }
      }
   };

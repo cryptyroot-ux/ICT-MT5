@@ -4,6 +4,8 @@
 #property strict
 
 #include <SMC_Config.mqh>
+#include <SMC_Filters.mqh>
+#include <SMC_RuntimeConfig.mqh>
 #include <SMC_MarketStructure.mqh>
 #include <SMC_Liquidity.mqh>
 #include <SMC_Displacement.mqh>
@@ -374,6 +376,28 @@ void HandleNewClosedM5()
          InvalidateCurrentSetup("daily_risk_guard_blocks_new_order");
          return;
         }
+
+      //--- FILTER V2 (lihat SMC_Filters.mqh) ---------------------------------
+      // Diuji pada DEV 2018-07..2024-04; jendela OOS sengaja tidak dipakai.
+      MqlTick v2tick;
+      if(!SymbolInfoTick(InpSMCSymbol,v2tick))
+        {
+         InvalidateCurrentSetup("v2_tick_unavailable");
+         return;
+        }
+      if(!SMC_SessionAllowed(InpSMCSymbol))
+        {
+         InvalidateCurrentSetup("v2_outside_high_conviction_session");
+         return;
+        }
+      const bool v2_is_buy=(g_smc_setup.direction==SMC_DIRECTION_BUY);
+      if(!SMC_PremiumDiscountAllows(InpSMCSymbol,v2_is_buy,v2tick.bid))
+        {
+         InvalidateCurrentSetup("v2_wrong_premium_discount_side");
+         return;
+        }
+      //----------------------------------------------------------------------
+
       double entry=(g_smc_setup.fvg_lower+g_smc_setup.fvg_upper)*0.5;
       const double tick_size=SymbolInfoDouble(InpSMCSymbol,SYMBOL_TRADE_TICK_SIZE);
       if(tick_size<=0.0)
@@ -382,15 +406,20 @@ void HandleNewClosedM5()
          return;
         }
       entry=SMCRoundToTick(entry,tick_size);
-      double target=0.0;
-      datetime target_time=0;
-      if(!g_smc_liquidity.FindNextLiquidity(g_smc_setup.direction,entry,target,target_time))
-        {
-         InvalidateCurrentSetup("no_valid_next_opposing_liquidity_target");
-         return;
-        }
-       g_smc_setup.take_profit=target;
-      g_smc_setup.target_liquidity_time=target_time;
+      //--- SL floor V2 + TP tetap 3R ----------------------------------------
+      // Spec yang divalidasi memakai TP 3R. Model "next liquidity target"
+      // diuji di B0-B3 dan menghasilkan 0-2 trade OOS karena targetnya
+      // hanya ~0.06R dari stop, jadi net R:R 3 mustahil tercapai.
+      double v2_distance=SMC_WidenedStopDistance(MathAbs(g_smc_setup.sweep_extreme-g_smc_setup.atr_value*0.5-entry),
+                                                 g_smc_setup.atr_value);
+      const double v2_atr_factor=SMC_V2_ATR_SL_MULTIPLIER;
+      double v2_atr_sl=g_smc_setup.atr_value*v2_atr_factor;
+      v2_distance=MathMax(v2_distance,v2_atr_sl);
+      v2_distance=MathMax(v2_distance,SMC_V2_MIN_SL_PRICE);
+      const double v2_direction=(v2_is_buy ? 1.0 : -1.0);
+      g_smc_setup.take_profit=entry+v2_direction*SMC_V2_FIXED_TP_R*v2_distance;
+      g_smc_setup.stop_loss=entry-v2_direction*v2_distance;
+      //------------------------------------------------------------------------
       if(g_smc_execution.SubmitMidpointLimit(g_smc_setup,g_smc_states,g_smc_risk,
                                              g_smc_ledger,g_smc_logger,InpSMCRiskPercent))
          return;
@@ -533,40 +562,71 @@ void ProcessSMC()
 
 int OnInit()
   {
-   if(!g_smc_logger.Init(InpSMCSymbol,InpSMCMagic,InpSMCRiskPercent,
-                         SMC_MAX_SPREAD_PRICE,InpSMCRoundTurnCommissionPerLot,
-                         InpSMCRoundTurnSlippagePerLot,InpSMCCostModelVerified,InpSMCLogLevel))
+   //--- Override dari file runtime ------------------------------------------
+   // Input .chr terbukti tidak selalu sampai ke EA; file.cfg adalah jalur
+   // konfigurasi deterministik yang bisa diaudit.
+   string cfg_symbol=InpSMCSymbol;
+   long   cfg_magic=InpSMCMagic;
+   double cfg_risk=InpSMCRiskPercent;
+   double cfg_daily_loss=InpSMCDailyLossPercent;
+   bool   cfg_cost_verified=InpSMCCostModelVerified;
+   double cfg_commission=InpSMCRoundTurnCommissionPerLot;
+   double cfg_slippage=InpSMCRoundTurnSlippagePerLot;
+   int    cfg_log_level=(int)InpSMCLogLevel;
+   SMCApplyRuntimeConfig(cfg_symbol,cfg_magic,cfg_risk,cfg_daily_loss,
+                         cfg_cost_verified,cfg_commission,cfg_slippage,cfg_log_level);
+   PrintFormat("[SMC] runtime config: symbol=%s magic=%I64d risk=%.4f "
+               "daily_loss=%.4f cost_verified=%d commission=%.4f slippage=%.4f log=%d",
+               cfg_symbol,cfg_magic,cfg_risk,cfg_daily_loss,
+               (int)cfg_cost_verified,cfg_commission,cfg_slippage,cfg_log_level);
+   //------------------------------------------------------------------------
+
+   if(!g_smc_logger.Init(cfg_symbol,cfg_magic,cfg_risk,
+                         SMC_MAX_SPREAD_PRICE,cfg_commission,
+                         cfg_slippage,cfg_cost_verified,(SMC_LOG_LEVEL)cfg_log_level))
      {
       Print("[SMC] init failed: event CSV cannot be opened");
       return INIT_FAILED;
      }
+   // Spec symbol bisa belum siap pada OnInit pertama. Tunggu dulu, dan kalau
+   // tetap gagal cetak properti apa adanya supaya penyebabnya terlihat.
+   if(!SMCWaitForSymbolProperties(cfg_symbol,20000))
+      Print("[SMC] symbol properties not ready after 20s: ",
+            SMCDescribeSymbolProperties(cfg_symbol));
+
    string config_reason="";
-   if(!SMCValidateConfiguration(InpSMCSymbol,SMC_EXECUTION_TF,InpSMCRiskPercent,
-                                InpSMCDailyLossPercent,InpSMCCostModelVerified,
-                                InpSMCRoundTurnCommissionPerLot,
-                                InpSMCRoundTurnSlippagePerLot,config_reason))
+   if(!SMCValidateConfiguration(cfg_symbol,SMC_EXECUTION_TF,cfg_risk,
+                                cfg_daily_loss,cfg_cost_verified,
+                                cfg_commission,cfg_slippage,config_reason))
      {
       g_smc_states.Reset(g_smc_setup,ServerNow());
       g_smc_logger.Write(g_smc_setup,"configuration_rejected","INIT",0.0,
-                         InpSMCRiskPercent,0,config_reason);
+                         cfg_risk,0,config_reason);
       return INIT_PARAMETERS_INCORRECT;
      }
    if(AccountInfoInteger(ACCOUNT_TRADE_MODE)==ACCOUNT_TRADE_MODE_REAL)
      {
       g_smc_states.Reset(g_smc_setup,ServerNow());
       g_smc_logger.Write(g_smc_setup,"configuration_rejected","INIT",0.0,
-                         InpSMCRiskPercent,0,"real_accounts_are_disabled_research_demo_only");
+                         cfg_risk,0,"real_accounts_are_disabled_research_demo_only");
       return INIT_FAILED;
      }
-   if(!g_smc_market.Init(InpSMCSymbol) || !g_smc_liquidity.Init(InpSMCSymbol) ||
-      !g_smc_displacement.Init(InpSMCSymbol) || !g_smc_fvg.Init(InpSMCSymbol) ||
-      !g_smc_risk.Init(InpSMCSymbol,InpSMCMagic,InpSMCRiskPercent,InpSMCDailyLossPercent,
-                       InpSMCRoundTurnCommissionPerLot,InpSMCRoundTurnSlippagePerLot,
-                       InpSMCCostModelVerified) || !g_smc_ledger.Init(InpSMCSymbol,InpSMCMagic) ||
-      !g_smc_execution.Init(InpSMCSymbol,InpSMCMagic))
+   // Diagnostik per modul:_logs first failure instead of collapsing them all
+   // into one reason, otherwise a failing module is impossible to identify.
+   bool modules_ok=true;
+   if(!g_smc_market.Init(cfg_symbol))            { Print("[SMC] init failed: market");        modules_ok=false; }
+   if(!g_smc_liquidity.Init(cfg_symbol))         { Print("[SMC] init failed: liquidity");     modules_ok=false; }
+   if(!g_smc_displacement.Init(cfg_symbol))      { Print("[SMC] init failed: displacement");  modules_ok=false; }
+   if(!g_smc_fvg.Init(cfg_symbol))               { Print("[SMC] init failed: fvg");           modules_ok=false; }
+   if(!g_smc_risk.Init(cfg_symbol,cfg_magic,cfg_risk,cfg_daily_loss,
+                       cfg_commission,cfg_slippage,cfg_cost_verified))
+     { Print("[SMC] init failed: risk  ",SMCDescribeSymbolProperties(cfg_symbol)); modules_ok=false; }
+   if(!g_smc_ledger.Init(cfg_symbol,cfg_magic)) { Print("[SMC] init failed: ledger");         modules_ok=false; }
+   if(!g_smc_execution.Init(cfg_symbol,cfg_magic)) { Print("[SMC] init failed: execution");   modules_ok=false; }
+   if(!modules_ok)
      {
       g_smc_logger.Write(g_smc_setup,"initialization_failed","INIT",0.0,
-                         InpSMCRiskPercent,0,"module_or_equity_reference_initialization_failed");
+                         cfg_risk,0,"module_or_equity_reference_initialization_failed");
       return INIT_FAILED;
      }
 

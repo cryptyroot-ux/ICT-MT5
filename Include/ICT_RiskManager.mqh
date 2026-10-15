@@ -67,9 +67,9 @@ private:
      {
       const double point=SymbolInfoDouble(symbol,SYMBOL_POINT);
       const int digits=(int)SymbolInfoInteger(symbol,SYMBOL_DIGITS);
-      if(StringFind(symbol,\"XAU\")>=0)
+      if(StringFind(symbol,"XAU")>=0)
          return MathMax(point*10.0,0.1);
-      if(StringFind(symbol,\"NAS\")>=0 || StringFind(symbol,\"US30\")>=0 || StringFind(symbol,\"US 30\")>=0 || StringFind(symbol,\"DJ\")>=0 || StringFind(symbol,\"USTEC\")>=0)
+      if(StringFind(symbol,"NAS")>=0 || StringFind(symbol,"US30")>=0 || StringFind(symbol,"US 30")>=0 || StringFind(symbol,"DJ")>=0 || StringFind(symbol,"USTEC")>=0)
          return MathMax(point,1.0);
       return ((digits==3 || digits==5) ? point*10.0 : point);
      }
@@ -84,9 +84,9 @@ private:
       const double contractSize=SymbolInfoDouble(symbol,SYMBOL_TRADE_CONTRACT_SIZE);
       if(contractSize>0.0)
          return contractSize*pipSize;
-      if(StringFind(symbol,\"XAU\")>=0)
+      if(StringFind(symbol,"XAU")>=0)
          return 10.0;
-      if(StringFind(symbol,\"NAS\")>=0 || StringFind(symbol,\"US30\")>=0 || StringFind(symbol,\"US 30\")>=0 || StringFind(symbol,\"DJ\")>=0 || StringFind(symbol,\"USTEC\")>=0)
+      if(StringFind(symbol,"NAS")>=0 || StringFind(symbol,"US30")>=0 || StringFind(symbol,"US 30")>=0 || StringFind(symbol,"DJ")>=0 || StringFind(symbol,"USTEC")>=0)
          return 1.0;
       return 1.0;
      }
@@ -95,7 +95,7 @@ private:
      {
       MqlDateTime dt;
       TimeToStruct(TimeCurrent(),dt);
-      const datetime today=(datetime)StringToTime(StringFormat(\"%04d.%02d.%02d 00:00:00\",dt.year,dt.mon,dt.day));
+      const datetime today=(datetime)StringToTime(StringFormat("%04d.%02d.%02d 00:00:00",dt.year,dt.mon,dt.day));
       if(today!=m_lastResetDate)
         {
          m_lastResetDate=today;
@@ -155,17 +155,17 @@ private:
       m_takeProfitPips=0;
 
       // Use M5 for exec (faster signal) but ATR on H1 (more stable)
-      const ENUM_TIMEFRAMES atrTf=(StringFind(m_symbol,\"XAU\")>=0) ? PERIOD_H1 : PERIOD_M5;
+      const ENUM_TIMEFRAMES atrTf=(StringFind(m_symbol,"XAU")>=0) ? PERIOD_H1 : PERIOD_M5;
       m_atrValue=CalcATR(m_symbol,atrTf,14);
 
       if(m_atrValue<=0.0)
         {
          // Fallback: if ATR unavailable, use symbol-specific fixed stops
-         if(StringFind(m_symbol,\"XAU\")>=0)
+         if(StringFind(m_symbol,"XAU")>=0)
             m_stopLossPips=500;  // ~500 pips = $50 = 1% on $5000 acct
-         else if(StringFind(m_symbol,\"NAS\")>=0)
+         else if(StringFind(m_symbol,"NAS")>=0)
             m_stopLossPips=15;   // 15 points = ~$7.50 on 0.5 lots
-         else if(StringFind(m_symbol,\"US30\")>=0 || StringFind(m_symbol,\"DJ\")>=0)
+         else if(StringFind(m_symbol,"US30")>=0 || StringFind(m_symbol,"DJ")>=0)
             m_stopLossPips=20;   // 20 points = ~$20 on 1 lot
          else
             m_stopLossPips=50;   // generic fallback
@@ -173,7 +173,7 @@ private:
          return;
         }
 
-      if(StringFind(m_symbol,\"XAU\")>=0)
+      if(StringFind(m_symbol,"XAU")>=0)
         {
          // XAUUSD: SL = 0.5x ATR(H1) in pip terms
          // ATR is in price units. Convert to pips: divide by point*10 (1 pip = 10 points for XAU)
@@ -199,7 +199,7 @@ private:
 public:
                CRiskManager()
         {
-         m_symbol=\"\";
+         m_symbol="";
          m_riskPercent=1.0;
          m_maxDailyLoss=2.0;
          m_dailyLossCap=0.0;
