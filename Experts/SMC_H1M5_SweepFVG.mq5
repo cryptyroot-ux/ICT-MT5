@@ -6,6 +6,7 @@
 #include <SMC_Config.mqh>
 #include <SMC_Filters.mqh>
 #include <SMC_RuntimeConfig.mqh>
+
 #include <SMC_MarketStructure.mqh>
 #include <SMC_Liquidity.mqh>
 #include <SMC_Displacement.mqh>
@@ -30,6 +31,15 @@ input double         InpSMCRoundTurnSlippagePerLot        = 0.0;
 input group "=== LOGGING ==="
 input SMC_LOG_LEVEL  InpSMCLogLevel                       = SMC_LOG_INFO;
 
+//--- Nilai konfigurasi RUNTIME yang benar-benar dipakai -------------------------
+//| Input MQL5 tidak selalu sampai ke EA (terbukti: nilai tetap default meski .chr
+//| benar), jadi config dibaca dari SMC_V2.cfg. Semua pencatatan RISK_PERCENT di
+//| CSV harus memakai nilai RUNTIME ini, bukan input mentah, kalau tidak laporan
+//| forward test akan mencatat risiko yang berbeda dari yang benar-benar dipakai.
+double   g_cfg_risk_percent=SMC_DEFAULT_RISK_PERCENT;
+double   g_cfg_daily_loss_percent=SMC_DAILY_LOSS_PERCENT;
+long     g_cfg_magic=15101501;
+string   g_cfg_symbol="XAUUSD";
 CSMCMarketStructure  g_smc_market;
 CSMCLiquidity        g_smc_liquidity;
 CSMCDisplacement     g_smc_displacement;
@@ -50,7 +60,7 @@ string               g_smc_bias_cursor_key="";
 string BiasCursorKey()
   {
    return StringFormat("SMC_BIAS_%I64d_%I64d_%s",
-                       (long)AccountInfoInteger(ACCOUNT_LOGIN),InpSMCMagic,InpSMCSymbol);
+                       (long)AccountInfoInteger(ACCOUNT_LOGIN),g_cfg_magic,g_cfg_symbol);
   }
 
 datetime ServerNow()
@@ -78,10 +88,10 @@ void LogTransition(const SMC_SETUP_STATE next,const datetime event_time,
    if(!g_smc_states.Transition(g_smc_setup,next,event_time,reason))
      {
       g_smc_logger.Write(g_smc_setup,"transition_rejected",before,0.0,
-                         InpSMCRiskPercent,0,"illegal_transition_"+event);
+                         g_cfg_risk_percent,0,"illegal_transition_"+event);
       return;
      }
-   g_smc_logger.Write(g_smc_setup,event,before,0.0,InpSMCRiskPercent,0,reason);
+   g_smc_logger.Write(g_smc_setup,event,before,0.0,g_cfg_risk_percent,0,reason);
   }
 
 bool LoadLatestClosedM5(MqlRates &bar)
@@ -89,7 +99,7 @@ bool LoadLatestClosedM5(MqlRates &bar)
    MqlRates rates[];
    ArrayResize(rates,2);
    ArraySetAsSeries(rates,true);
-   const int copied=CopyRates(InpSMCSymbol,SMC_EXECUTION_TF,1,1,rates);
+   const int copied=CopyRates(g_cfg_symbol,SMC_EXECUTION_TF,1,1,rates);
    if(copied!=1)
       return false;
    bar=rates[0];
@@ -146,7 +156,7 @@ void InvalidateCurrentSetup(const string reason,const bool expired=false)
    if(g_smc_setup.state==SMC_ORDER_PENDING)
      {
       if(!g_smc_execution.CancelPending(g_smc_setup,g_smc_states,g_smc_logger,
-                                        reason,expired,InpSMCRiskPercent))
+                                        reason,expired,g_cfg_risk_percent))
          return;
       return;
      }
@@ -178,12 +188,12 @@ void EnforcePositionRisk()
       else
          g_smc_setup.actual_slippage=g_smc_setup.entry_price-average_price;
       g_smc_logger.Write(g_smc_setup,"position_risk_reconciled",SMCStateName(g_smc_setup.state),
-                         0.0,InpSMCRiskPercent,0,"actual_open_price_and_volume_read_from_terminal");
+                         0.0,g_cfg_risk_percent,0,"actual_open_price_and_volume_read_from_terminal");
      }
    if(g_smc_setup.actual_fill_price<=0.0 || g_smc_setup.stop_loss<=0.0 || volume<=0.0)
       return;
    MqlTick tick;
-   if(!SymbolInfoTick(InpSMCSymbol,tick))
+   if(!SymbolInfoTick(g_cfg_symbol,tick))
       return;
    double actual_loss=0.0;
    if(!g_smc_risk.CalculateActualLoss(g_smc_setup.direction,g_smc_setup.actual_fill_price,
@@ -201,13 +211,13 @@ void HandleNewClosedM5()
    if(!g_smc_ledger.Recover())
      {
       g_smc_logger.Write(g_smc_setup,"entries_blocked",SMCStateName(g_smc_setup.state),
-                         0.0,InpSMCRiskPercent,0,"trade_history_reconciliation_failed");
+                         0.0,g_cfg_risk_percent,0,"trade_history_reconciliation_failed");
       return;
      }
    if(!g_smc_risk.RefreshDay())
      {
       g_smc_logger.Write(g_smc_setup,"entries_blocked",SMCStateName(g_smc_setup.state),
-                         0.0,InpSMCRiskPercent,0,"daily_equity_reference_unreliable");
+                         0.0,g_cfg_risk_percent,0,"daily_equity_reference_unreliable");
       return;
      }
 
@@ -227,7 +237,7 @@ void HandleNewClosedM5()
             const string before=SMCStateName(g_smc_setup.state);
             if(g_smc_states.Transition(g_smc_setup,SMC_COMPLETED,now,"position_lifecycle_reconciled_closed"))
                g_smc_logger.Write(g_smc_setup,"position_completed",before,0.0,
-                                  InpSMCRiskPercent,0,"actual_position_lifecycle_pnl",pnl);
+                                  g_cfg_risk_percent,0,"actual_position_lifecycle_pnl",pnl);
            }
         }
       return;
@@ -240,6 +250,15 @@ void HandleNewClosedM5()
       const SMC_STRUCTURE_EVENT bos=g_smc_market.LastBOS();
       if(bos.confirmation_time<=g_smc_last_consumed_bias)
          return; // A BOS event is consumed once; it cannot seed a second setup after restart.
+
+      // Jangan adopsi BOS yang sudah melewati jendela pengembangan. Tanpa cek ini
+      // EA mengadopsi BOS kuno, langsung menandainya basi pada bar M5 berikutnya,
+      // lalu mengadopsi BOS yang sama lagi -> confirm/stale berulang tiap 5 menit
+      // dan setup tidak pernah sempat berkembang.
+      const int dev_period_seconds=PeriodSeconds(SMC_EXECUTION_TF);
+      if(dev_period_seconds>0 && now>bos.confirmation_time+SMC_SETUP_DEVELOPMENT_BARS*dev_period_seconds)
+         return;
+
       g_smc_setup.direction=bos.direction;
       g_smc_setup.h1_bos_level=bos.level;
       g_smc_setup.h1_bos_time=bos.pivot_time;
@@ -285,7 +304,7 @@ void HandleNewClosedM5()
       if(!SaveConsumedBias(g_smc_setup.h1_bos_confirmation))
         {
          g_smc_logger.Write(g_smc_setup,"setup_rejected","WAIT_SWEEP",0.0,
-                            InpSMCRiskPercent,0,"cannot_persist_consumed_H1_BOS_cursor");
+                            g_cfg_risk_percent,0,"cannot_persist_consumed_H1_BOS_cursor");
          return;
         }
       g_smc_setup.setup_id=sweep.setup_id;
@@ -380,18 +399,18 @@ void HandleNewClosedM5()
       //--- FILTER V2 (lihat SMC_Filters.mqh) ---------------------------------
       // Diuji pada DEV 2018-07..2024-04; jendela OOS sengaja tidak dipakai.
       MqlTick v2tick;
-      if(!SymbolInfoTick(InpSMCSymbol,v2tick))
+      if(!SymbolInfoTick(g_cfg_symbol,v2tick))
         {
          InvalidateCurrentSetup("v2_tick_unavailable");
          return;
         }
-      if(!SMC_SessionAllowed(InpSMCSymbol))
+      if(!SMC_SessionAllowed(g_cfg_symbol))
         {
          InvalidateCurrentSetup("v2_outside_high_conviction_session");
          return;
         }
       const bool v2_is_buy=(g_smc_setup.direction==SMC_DIRECTION_BUY);
-      if(!SMC_PremiumDiscountAllows(InpSMCSymbol,v2_is_buy,v2tick.bid))
+      if(!SMC_PremiumDiscountAllows(g_cfg_symbol,v2_is_buy,v2tick.bid))
         {
          InvalidateCurrentSetup("v2_wrong_premium_discount_side");
          return;
@@ -399,7 +418,7 @@ void HandleNewClosedM5()
       //----------------------------------------------------------------------
 
       double entry=(g_smc_setup.fvg_lower+g_smc_setup.fvg_upper)*0.5;
-      const double tick_size=SymbolInfoDouble(InpSMCSymbol,SYMBOL_TRADE_TICK_SIZE);
+      const double tick_size=SymbolInfoDouble(g_cfg_symbol,SYMBOL_TRADE_TICK_SIZE);
       if(tick_size<=0.0)
         {
          InvalidateCurrentSetup("symbol_tick_size_unavailable");
@@ -421,7 +440,7 @@ void HandleNewClosedM5()
       g_smc_setup.stop_loss=entry-v2_direction*v2_distance;
       //------------------------------------------------------------------------
       if(g_smc_execution.SubmitMidpointLimit(g_smc_setup,g_smc_states,g_smc_risk,
-                                             g_smc_ledger,g_smc_logger,InpSMCRiskPercent))
+                                             g_smc_ledger,g_smc_logger,g_cfg_risk_percent))
          return;
       if(!g_smc_execution.HasUnresolvedRequest())
          InvalidateCurrentSetup("pending_limit_submission_rejected");
@@ -434,7 +453,7 @@ void ManagePendingSetup(const bool new_m5_bar)
    if(g_smc_setup.state==SMC_ORDER_PENDING)
      {
       datetime now=ServerNow();
-      const int bars_after_reference=iBarShift(InpSMCSymbol,SMC_EXECUTION_TF,
+      const int bars_after_reference=iBarShift(g_cfg_symbol,SMC_EXECUTION_TF,
                                                g_smc_setup.order_reference_time,false);
       if(g_smc_setup.order_expiry>0 &&
          (now>=g_smc_setup.order_expiry || bars_after_reference>=SMC_PENDING_EXPIRY_BARS))
@@ -470,7 +489,7 @@ void ManagePendingSetup(const bool new_m5_bar)
          return;
         }
       MqlTick tick;
-      if(!SymbolInfoTick(InpSMCSymbol,tick))
+      if(!SymbolInfoTick(g_cfg_symbol,tick))
          return;
       double updated_rr=0.0;
       if(!g_smc_risk.CalculateNetRewardRisk(g_smc_setup.direction,g_smc_setup.entry_price,
@@ -480,11 +499,11 @@ void ManagePendingSetup(const bool new_m5_bar)
          InvalidateCurrentSetup("changed_liquidity_target_fails_net_1_to_3_gate");
          return;
         }
-      const double tick_size=SymbolInfoDouble(InpSMCSymbol,SYMBOL_TRADE_TICK_SIZE);
+      const double tick_size=SymbolInfoDouble(g_cfg_symbol,SYMBOL_TRADE_TICK_SIZE);
       if(tick_size>0.0 && MathAbs(updated_target-g_smc_setup.take_profit)>=tick_size)
         {
          if(!g_smc_execution.ModifyPendingTarget(g_smc_setup,g_smc_logger,updated_target,
-                                                 target_time,updated_rr,InpSMCRiskPercent))
+                                                 target_time,updated_rr,g_cfg_risk_percent))
             InvalidateCurrentSetup("liquidity_target_changed_but_pending_order_modify_failed");
         }
      }
@@ -519,7 +538,7 @@ void ManagePendingSetup(const bool new_m5_bar)
             const string before=SMCStateName(g_smc_setup.state);
             if(g_smc_states.Transition(g_smc_setup,SMC_COMPLETED,ServerNow(),"position_lifecycle_reconciled_closed"))
                g_smc_logger.Write(g_smc_setup,"position_completed",before,0.0,
-                                  InpSMCRiskPercent,0,"actual_position_lifecycle_pnl",pnl);
+                                  g_cfg_risk_percent,0,"actual_position_lifecycle_pnl",pnl);
            }
         }
      }
@@ -540,7 +559,7 @@ void ProcessSMC()
    if(!g_smc_risk.RefreshDay())
       return;
 
-   datetime forming_time=iTime(InpSMCSymbol,SMC_EXECUTION_TF,0);
+   datetime forming_time=iTime(g_cfg_symbol,SMC_EXECUTION_TF,0);
    const bool new_m5_bar=(forming_time>0 && forming_time!=g_smc_last_m5_forming_bar);
    if(new_m5_bar)
       g_smc_last_m5_forming_bar=forming_time;
@@ -565,8 +584,8 @@ int OnInit()
    //--- Override dari file runtime ------------------------------------------
    // Input .chr terbukti tidak selalu sampai ke EA; file.cfg adalah jalur
    // konfigurasi deterministik yang bisa diaudit.
-   string cfg_symbol=InpSMCSymbol;
-   long   cfg_magic=InpSMCMagic;
+   string cfg_symbol=g_cfg_symbol;
+   long   cfg_magic=g_cfg_magic;
    double cfg_risk=InpSMCRiskPercent;
    double cfg_daily_loss=InpSMCDailyLossPercent;
    bool   cfg_cost_verified=InpSMCCostModelVerified;
@@ -575,6 +594,10 @@ int OnInit()
    int    cfg_log_level=(int)InpSMCLogLevel;
    SMCApplyRuntimeConfig(cfg_symbol,cfg_magic,cfg_risk,cfg_daily_loss,
                          cfg_cost_verified,cfg_commission,cfg_slippage,cfg_log_level);
+   g_cfg_symbol=cfg_symbol;
+   g_cfg_magic=cfg_magic;
+   g_cfg_risk_percent=cfg_risk;
+   g_cfg_daily_loss_percent=cfg_daily_loss;
    PrintFormat("[SMC] runtime config: symbol=%s magic=%I64d risk=%.4f "
                "daily_loss=%.4f cost_verified=%d commission=%.4f slippage=%.4f log=%d",
                cfg_symbol,cfg_magic,cfg_risk,cfg_daily_loss,
@@ -633,7 +656,7 @@ int OnInit()
    if(!g_smc_ledger.Recover())
      {
       g_smc_logger.Write(g_smc_setup,"recovery_blocked","INIT",0.0,
-                         InpSMCRiskPercent,0,"deal_history_could_not_reconstruct_loss_streak");
+                         g_cfg_risk_percent,0,"deal_history_could_not_reconstruct_loss_streak");
       g_smc_recovery_ready=false;
      }
    else
@@ -648,15 +671,15 @@ int OnInit()
       g_smc_last_consumed_bias=0;
 
    g_smc_execution.RecoverAtStartup(g_smc_setup,g_smc_states,g_smc_ledger,g_smc_logger);
-   g_smc_last_m5_forming_bar=iTime(InpSMCSymbol,SMC_EXECUTION_TF,0);
+   g_smc_last_m5_forming_bar=iTime(g_cfg_symbol,SMC_EXECUTION_TF,0);
    if(!EventSetTimer(1))
      {
        g_smc_logger.Write(g_smc_setup,"initialization_failed","INIT",0.0,
-                         InpSMCRiskPercent,0,"one_second_reconciliation_timer_failed");
+                         g_cfg_risk_percent,0,"one_second_reconciliation_timer_failed");
       return INIT_FAILED;
      }
    g_smc_enabled=true;
-   g_smc_logger.Write(g_smc_setup,"initialized","INIT",0.0,InpSMCRiskPercent,0,
+   g_smc_logger.Write(g_smc_setup,"initialized","INIT",0.0,g_cfg_risk_percent,0,
                       "research_demo_only_real_account_blocked");
    return INIT_SUCCEEDED;
   }
@@ -687,8 +710,8 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
       return;
    if(!HistoryDealSelect(trans.deal))
       return;
-   if(HistoryDealGetString(trans.deal,DEAL_SYMBOL)!=InpSMCSymbol ||
-      HistoryDealGetInteger(trans.deal,DEAL_MAGIC)!=InpSMCMagic)
+   if(HistoryDealGetString(trans.deal,DEAL_SYMBOL)!=g_cfg_symbol ||
+      HistoryDealGetInteger(trans.deal,DEAL_MAGIC)!=g_cfg_magic)
       return;
 
    const ulong position_id=(ulong)HistoryDealGetInteger(trans.deal,DEAL_POSITION_ID);
