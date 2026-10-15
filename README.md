@@ -1,10 +1,100 @@
 # ICT-MT5 — Automated ICT Smart Money Concepts EA
 
+> **Upstream author:** Malibongwe Ndhlovu — <https://github.com/MB-Ndhlovu/ICT-MT5>
+> **Fork:** cryptyroot-ux/ICT-MT5
+> **Execution:** MetaTrader 5 / MQL5
+> **Upstream target markets:** XAUUSD, NAS100, US30
+
+---
+
+## ⚠️ Read this first: two different codebases live in this repository
+
+| | Upstream baseline `ICT_*` | Target strategy `SMC_*` |
+|---|---|---|
+| Entry point | `Experts/ICT_EA.mq5` | `Experts/SMC_H1M5_SweepFVG.mq5` |
+| Status | **Preserved unmodified for audit.** Does not compile as received (`docs/SOURCE_AUDIT.md` AUD-001) | New implementation of the frozen strategy |
+| Logic | D1 premium/discount bias, kill zones, order blocks, confidence scoring, market orders, ATR-from-entry stops | H1 confirmed BOS → M5 liquidity sweep/reclaim → post-sweep displacement + CHoCH → displacement-created 3-candle FVG → midpoint limit entry, sweep-extreme stop |
+| Evidence | The checked-in CSVs/GIF are synthetic or Yahoo-derived and are **not** performance evidence | Compile status: **NOT VERIFIED**; OOS performance: **NOT VERIFIED** |
+
+**Do not attach `ICT_EA`.** Use `SMC_H1M5_SweepFVG`, which is hard-blocked on real
+accounts and refuses to trade until a verified broker cost model is supplied.
+
+## SMC-H1M5-SweepFVG (target strategy)
+
+**Strategy:** liquidity-sweep reversal with post-sweep displacement, CHoCH/MSS, a
+displacement-created fair value gap, and a retracement limit entry.
+**Instrument:** XAUUSD · **Context:** H1 · **Execution:** M5
+
+Frozen rules (full detail in `docs/SMC_H1M5_SWEEPFVG_SPEC.md`):
+
+1. **H1 bias** — close-only BOS through a span-2 pivot confirmed two completed candles
+   earlier. No D1 midpoint bias, no premium/discount score.
+2. **M5 sweep** — a completed M5 candle trades ≥ 2 symbol ticks through a confirmed
+   sell-side (for BUY) or buy-side (for SELL) pivot; a completed candle closes back
+   beyond the level within 3 candles. The sweep extreme is recorded for the stop.
+3. **Post-sweep displacement + CHoCH** — the candle must close through an internal pivot
+   formed *after* reclaim, with body ≥ 1.0 × completed-bar M5 ATR(14), body/range ≥ 0.60,
+   and close in the outer range quartile.
+4. **FVG** — C2 is the displacement candle; bullish `Low(C3) > High(C1)`, bearish
+   `High(C3) < Low(C1)`; gap ≥ 1 symbol tick; bound to this displacement and setup ID.
+5. **Entry** — pending **limit** order at the FVG midpoint (50%). Expires at the earlier
+   of 6 completed M5 candles or 30 minutes after the C3 confirmation.
+6. **Stop** — sweep extreme ∓ 0.5 × completed M5 ATR(14), rounded outward to tick size.
+7. **Target** — the next opposing confirmed liquidity level; **net R:R ≥ 3.00** after
+   spread, commission, fees, and slippage. Otherwise no trade.
+8. **Risk** — 0.25 %–0.50 % per trade (default 0.50 %) of a stable broker-day equity
+   reference; 2 % daily cap; entries stop after two consecutive losing position
+   lifecycles; max entry spread 0.50 price units.
+9. **Accounting** — realized PnL, daily loss, and loss streak come from actual deal
+   history by position identifier and magic number, including commission, swap, and fee.
+
+### Source layout
+
+```text
+Experts/SMC_H1M5_SweepFVG.mq5   EA lifecycle, state orchestration, execution coordination
+Include/SMC_Config.mqh           frozen constants, tick helpers, config validation
+Include/SMC_MarketStructure.mqh  confirmed H1 swings, close-only BOS, bias
+Include/SMC_Liquidity.mqh        M5 pivots, sweep excursion/reclaim, target pools
+Include/SMC_Displacement.mqh     completed-bar M5 ATR, post-sweep displacement + CHoCH
+Include/SMC_FVG.mqh              three-candle gap detection and validity lifecycle
+Include/SMC_SetupStateMachine.mqh explicit state transitions and terminal states
+Include/SMC_RiskManager.mqh      monetary risk, volume flooring, daily cap
+Include/SMC_Execution.mqh        pending-order lifecycle, retcodes, emergency close
+Include/SMC_TradeLedger.mqh      position-lifecycle PnL, costs, restart recovery
+Include/SMC_Logger.mqh           machine-readable CSV event log + config hash
+Scripts/SMC_SymbolSpec.mq5       measure the real broker symbol specification
+research/                        deterministic reference model + B0-B3 runner
+tests/                           deterministic logic and static-structure tests
+```
+
+### Run the tests
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+These are deterministic logic and static-structure tests. They are **not** MQL5 compile
+tests and **not** MT5 runtime tests.
+
+### Current evidence status
+
+Compilation **NOT VERIFIED** (no MetaEditor on the authoring host). Broker
+specification **NOT VERIFIED**. B0–B3 out-of-sample results **NOT VERIFIED / INCONCLUSIVE**.
+All frozen acceptance gates remain **INCONCLUSIVE**. See `docs/VALIDATION_REPORT.md`.
+
+**This project is RESEARCH / DEMO ONLY. No profitability claim is made.**
+
+---
+
+## Upstream baseline (unchanged)
+
 > **Author:** Malibongwe Ndhlovu
 > **Supervisor:** Malibongwe Ndhlovu
 > **Execution:** MetaTrader 5 / MQL5
 > **Target Markets:** XAUUSD, NAS100, US30
-> **Risk Model:** 1% per trade, 2% daily loss cap
+> **Risk Model (LEGACY BASELINE ONLY — do not copy):** 1% per trade, 2% daily loss cap.
+> The active `SMC-H1M5-SweepFVG` strategy uses **0.25 %–0.50 % per trade, default
+> 0.50 %**, with a 2 % daily cap. See `AGENTS.md` and `docs/SMC_H1M5_SWEEPFVG_SPEC.md`.
 
 ## Overview
 

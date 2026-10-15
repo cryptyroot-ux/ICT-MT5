@@ -1,5 +1,21 @@
 # ICT Automation Project — Plan
 
+> ## ⚠️ SUPERSEDED — historical planning record only
+>
+> This document is the **original upstream planning note**. Its CCXT / pandas /
+> Flask / NautilusTrader architecture and its multi-market (XAUUSD, NAS100, US30)
+> roadmap describe an approach that was **never implemented** and is not the current
+> design.
+>
+> **The actual, authoritative plan and specification are:**
+> - `docs/SMC_H1M5_SWEEPFVG_SPEC.md` — frozen strategy rules
+> - `docs/superpowers/plans/2026-10-15-smc-h1m5-sweepfvg.md` — implementation plan
+> - `docs/VALIDATION_REPORT.md` — evidence status and known blocker
+>
+> The shipped implementation is native **MQL5** (no CCXT, no Flask, no external
+> services), targets **XAUUSD only**, and runs at **0.25 %-0.50 % risk per trade**
+> (default 0.50 %), not 1 %. Do not plan new work from the content below.
+
 ## Context
 User wants to learn ICT methodology and automate it. Deep research done. Architecture planned.
 
@@ -38,4 +54,6 @@ User wants to learn ICT methodology and automate it. Deep research done. Archite
 3. Capital and risk per trade?
 
 ## Status
-PLANNING COMPLETE — awaiting user input on 3 questions above before coding starts.
+SUPERSEDED. The questions above were never answered and are moot: the shipped target is
+XAUUSD on HFM Pro / HFM Demo, executed natively in MetaTrader 5 via MQL5. See
+`docs/VALIDATION_REPORT.md` for current status.

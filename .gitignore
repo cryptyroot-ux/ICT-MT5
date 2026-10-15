@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# MQL5 build artefacts (compiled by MetaEditor in the terminal, not committed)
+*.ex5
+*.ex4
+*.log
+*.opt
+
+# Local machine data / credentials must never be committed
+*.set
+accounts.dat
+servers.dat
+*.key
+*.pem
+.env
+
+# Local evidence output produced by research runs
+/results/
+MQL5/Files/*.csv

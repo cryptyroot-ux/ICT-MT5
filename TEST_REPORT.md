@@ -1,5 +1,12 @@
 # ICT-MT5 Test Report
 
+> **⚠️ LEGACY BASELINE — not the SMC strategy.**
+> This report covers `ICT_EA.mq5` and the `ICT_*` modules only, was written before this
+> fork's audit, and is **not** test evidence for `SMC-H1M5-SweepFVG`. For the SMC
+> strategy see `docs/VALIDATION_REPORT.md`, `docs/INSTALLATION.md`, and `tests/`.
+> The baseline it describes does **not** compile as received (`docs/SOURCE_AUDIT.md`,
+> AUD-001) and must not be attached.
+
 ## Compilation Status
 
 - **Status:** Review passed for major structural readiness, but compile verification was not run in this environment because no MT5/MQL5 compiler binary is available here.
