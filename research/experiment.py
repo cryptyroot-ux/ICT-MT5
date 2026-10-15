@@ -14,7 +14,9 @@ BLOCKED until that evidence exists.
 from __future__ import annotations
 
 import csv
+import datetime
 import hashlib
+import json
 import math
 import random
 from dataclasses import dataclass, field, asdict
@@ -27,6 +29,7 @@ from research.smc_core import (
     FVGStatus,
     confirmed_pivots,
     detect_bos,
+    detect_bos_sequence,
     detect_fvg,
     detect_sweep_reclaim,
     fvg_status,
@@ -311,6 +314,49 @@ def _sweep_confirms(
     return False, 0.0
 
 
+def next_liquidity_target(
+    bars: Sequence[Bar], entry_index: int, entry: float, direction: Direction, span: int, tick_size: float
+) -> float:
+    """Nearest confirmed opposing pivot strictly beyond the entry.
+
+    Mirrors the frozen target rule: a BUY targets the nearest confirmed swing
+    high above entry, a SELL the nearest confirmed swing low below entry. An
+    arbitrary distance target is never manufactured.
+    """
+    horizon = min(len(bars), entry_index + 100)
+    best = 0.0
+    for index in range(span, horizon - span):
+        window = bars[index - span : index + span + 1]
+        if not all(b.complete for b in window):
+            continue
+        centre = bars[index]
+        if direction is Direction.BUY:
+            is_pivot_high = all(centre.high > b.high for b in window if b is not centre)
+            if is_pivot_high and centre.high > entry + tick_size and (best == 0.0 or centre.high < best):
+                best = centre.high
+        else:
+            is_pivot_low = all(centre.low < b.low for b in window if b is not centre)
+            if is_pivot_low and centre.low < entry - tick_size and (best == 0.0 or centre.low > best):
+                best = centre.low
+    return best
+
+
+def order_lifetime_bars(
+    bars: Sequence[Bar], first_index: int, reference_time: int, config: FrozenConfig
+) -> list[Bar]:
+    """Bars visible to a pending limit order between its reference and its expiry.
+
+    Gap validity must be judged only over this window. A zone traversed months
+    after expiry is irrelevant: the order has already filled or been cancelled.
+    """
+    expiry = pending_expiry(reference_time)
+    window: list[Bar] = []
+    for bar in bars[first_index : first_index + config.pending_expiry_bars]:
+        if reference_time <= bar.time < expiry:
+            window.append(bar)
+    return window
+
+
 def run_variant(
     m5_bars: Sequence[Bar],
     h1_bars: Sequence[Bar],
@@ -335,24 +381,32 @@ def run_variant(
     if len(m5) < 40 or len(h1) < 10:
         return []
 
-    break_event = detect_bos(h1, span=config.swing_span)
-    if break_event is None:
+    break_event = detect_bos_sequence(h1, span=config.swing_span)
+    if not break_event:
         return []
 
     trades: list[Trade] = []
-    consumed_bias_time = 0
+    bias_cursor = 0  # index into break_event; each BOS may seed at most one setup
     for index in range(6, len(m5) - config.atr_period - 2):
-        if break_event.confirmation_time > m5[index].time:
+        # Advance to the most recent confirmed BOS at or before this M5 bar.
+        while bias_cursor < len(break_event) and break_event[bias_cursor].confirmation_time <= m5[index].time:
+            bias_cursor += 1
+        if bias_cursor == 0:
             continue
-        if m5[index].time <= consumed_bias_time:
+        event_index = bias_cursor - 1
+        if event_index < 0 or event_index >= len(break_event):
+            continue
+        event = break_event[event_index]
+        if event.confirmation_time > m5[index].time:
             continue
 
-        direction = break_event.direction
+        direction = event.direction
         confirmed, extreme = _sweep_confirms(m5, index, direction, config, manifest.tick_size)
         if not confirmed:
             continue
         sweep_time = m5[index].time
-        consumed_bias_time = break_event.confirmation_time
+        # A BOS event is consumed once: skip until the next confirmed BOS arrives.
+        bias_cursor += 1
 
         atr = atr_sma(m5[max(0, index - config.atr_period - 1) : index + 1], period=config.atr_period)
         if atr is None or atr <= 0:
@@ -391,7 +445,8 @@ def run_variant(
                 continue
             entry = midpoint(gap.lower, gap.upper)
             reference_time = m5[gap_start + 1].time
-            later = [bar for bar in m5[gap_start + 2 :] if bar.time > gap.created_time]
+            # Validity is judged over the order's lifetime only.
+            later = order_lifetime_bars(m5, gap_start + 2, reference_time, config)
             if fvg_status(gap, later) in (FVGStatus.CONSUMED, FVGStatus.INVALIDATED):
                 continue
         else:
@@ -404,6 +459,16 @@ def run_variant(
             continue
 
         distance = abs(entry - stop)
+
+        # Frozen target rule: the next opposing confirmed liquidity level, never a
+        # manufactured distance. No target -> no trade (matches the EA).
+        target = next_liquidity_target(m5, index, entry, direction, config.swing_span, manifest.tick_size)
+        if target <= 0.0:
+            continue
+        reward_distance = abs(target - entry)
+        if reward_distance <= 0.0:
+            continue
+
         loss_per_lot = (distance / manifest.tick_size) * manifest.tick_value_loss
         volume = normalize_volume(
             manifest.initial_equity * config.risk_percent / 100.0,
@@ -417,11 +482,11 @@ def run_variant(
         round_turn_cost = (
             manifest.commission_per_lot + manifest.slippage_per_lot
         ) * volume
-        if net_reward_risk(distance * config.min_net_rr, distance, round_turn_cost) < config.min_net_rr:
-            continue
-        if pending_expiry(reference_time) <= reference_time:
+        if net_reward_risk(reward_distance, distance, round_turn_cost) < config.min_net_rr:
             continue
         risk_amount = loss_per_lot * volume + round_turn_cost
+        # Monetary value of one price unit for one lot, from the broker tick spec.
+        money_per_price_unit_lot = manifest.tick_value_loss / manifest.tick_size
 
         trades.append(
             Trade(
@@ -431,21 +496,28 @@ def run_variant(
                 entry_time=reference_time,
                 entry=entry,
                 stop=stop,
-                target=entry + (config.min_net_rr * distance if direction is Direction.BUY else -config.min_net_rr * distance),
+                target=target,
                 volume=volume,
                 risk_amount=risk_amount,
                 exit_time=reference_time,
                 exit_reason="open",
                 pnl=0.0,
-                gross_reward=config.min_net_rr * distance * volume,
+                gross_reward=reward_distance * volume * money_per_price_unit_lot,
                 round_turn_cost=round_turn_cost,
                 bars_in_market=0,
             )
         )
-    return _resolve_exits(m5, trades, bars_in_market_max)
+    return _resolve_exits(m5, trades, bars_in_market_max, manifest)
 
 
-def _resolve_exits(m5: Sequence[Bar], trades: list[Trade], bars_in_market_max: int) -> list[Trade]:
+def _resolve_exits(
+    m5: Sequence[Bar], trades: list[Trade], bars_in_market_max: int, manifest: DataManifest
+) -> list[Trade]:
+    """Close each trade at the first stop/target touch, or at market on timeout.
+
+    PnL is converted to account currency with the broker tick value; a bare
+    price delta times volume is only valid when one tick value equals one unit.
+    """
     index_by_time = {bar.time: index for index, bar in enumerate(m5)}
     resolved: list[Trade] = []
     for trade in trades:
@@ -472,10 +544,16 @@ def _resolve_exits(m5: Sequence[Bar], trades: list[Trade], bars_in_market_max: i
                 if bar.low <= trade.target:
                     reason, price_delta, exit_index, exit_time = "target", trade.entry - trade.target, probe, bar.time
                     break
+        if reason == "timeout":
+            # A timed-out trade still exits at market; a zero-PnL exit is not a valid fill.
+            last = m5[exit_index]
+            price_delta = (last.close - trade.entry) if trade.direction == "BUY" else (trade.entry - last.close)
         trade.exit_reason = reason
         trade.exit_time = exit_time
         trade.bars_in_market = exit_index - start_index
-        trade.pnl = price_delta * trade.volume - trade.round_turn_cost
+        tick_value = manifest.tick_value_profit if price_delta >= 0 else manifest.tick_value_loss
+        money_per_price_unit_lot = tick_value / manifest.tick_size
+        trade.pnl = price_delta * trade.volume * money_per_price_unit_lot - trade.round_turn_cost
         resolved.append(trade)
     return resolved
 
@@ -622,3 +700,116 @@ def write_trade_csv(trades: Sequence[Trade], path: Path) -> Path:
             row["r_multiple"] = trade.r_multiple
             writer.writerow(row)
     return path
+
+
+# --------------------------------------------------------------------------- #
+# CLI: exploratory run against a broker bar export
+# --------------------------------------------------------------------------- #
+_TIMESTAMP_FORMATS = (
+    "%Y.%m.%d %H:%M:%S",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y.%m.%d %H:%M",
+    "%Y-%m-%d %H:%M",
+    "%Y.%m.%d",
+    "%Y-%m-%d",
+)
+
+
+def parse_broker_timestamp(stamp: str) -> datetime.datetime:
+    stamp = stamp.strip()
+    for fmt in _TIMESTAMP_FORMATS:
+        try:
+            return datetime.datetime.strptime(stamp, fmt)
+        except ValueError:
+            continue
+    raise EvidenceError(f"unrecognised broker timestamp format: {stamp!r}")
+
+
+def load_broker_bars(path: Path, timeframe_seconds: int) -> list[Bar]:
+    """Load an MT5-style `datetime,open,high,low,close,...` export as closed bars.
+
+    Timestamps are kept exactly as the broker reported them (broker server time);
+    no UTC conversion is applied, so all session reasoning stays server-relative.
+    """
+    bars: list[Bar] = []
+    with path.open(newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            stamp = row["datetime"].strip()
+            epoch = int(parse_broker_timestamp(stamp).timestamp())
+            if epoch % timeframe_seconds != 0:
+                raise EvidenceError(f"bar time {stamp} is not aligned to {timeframe_seconds}s")
+            bars.append(Bar(epoch, float(row["open"]), float(row["high"]),
+                            float(row["low"]), float(row["close"]), complete=True))
+    for earlier, later in zip(bars, bars[1:]):
+        if later.time <= earlier.time:
+            raise EvidenceError("broker export timestamps must be strictly increasing")
+    return bars
+
+
+def exploratory_run(
+    m5_path: Path,
+    h1_path: Path,
+    manifest: DataManifest,
+    config: FrozenConfig,
+    output_dir: Path,
+) -> dict:
+    """Run B1/B2/B3 over chronological segments and write machine-readable results."""
+    validate_manifest(manifest, m5_path, require_oos=False)
+    m5 = load_broker_bars(m5_path, 300)
+    h1 = load_broker_bars(h1_path, 3600)
+    segments = chronological_segments(h1)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    report: dict = {
+        "evidence_class": "EXPLORATORY_BAR_MODEL",
+        "oos_claim_permitted": False,
+        "reason": ("bar-model export with zero per-bar spread in older segments and no "
+                   "historical Bid/Ask ticks; account is HFM Demo4 Cent in IDR, not the "
+                   "HFM Pro target account"),
+        "symbol": manifest.symbol,
+        "broker": manifest.broker,
+        "account_server": manifest.account_server,
+        "account_currency": manifest.account_currency,
+        "initial_equity": manifest.initial_equity,
+        "m5_bars": len(m5),
+        "h1_bars": len(h1),
+        "m5_first": m5[0].time,
+        "m5_last": m5[-1].time,
+        "segments": [],
+        "results": {},
+    }
+
+    for segment in segments:
+        for variant in ("B1", "B2", "B3"):
+            trades = run_variant(m5, h1, variant, manifest, config, segment.start, segment.end)
+            buckets = purge_boundary_crossers(trades, segments)
+            owned = buckets.get(segment.name, [])
+            metrics = compute_metrics(owned, equity_reference=manifest.initial_equity)
+            key = f"{variant}:{segment.name}"
+            report["results"][key] = {
+                "trades": metrics.trades,
+                "win_rate_pct": round(metrics.win_rate, 4),
+                "avg_win_r": round(metrics.avg_win_r, 4),
+                "avg_loss_r": round(metrics.avg_loss_r, 4),
+                "expectancy_r": round(metrics.expectancy_r, 4),
+                "profit_factor": (None if metrics.profit_factor == float("inf")
+                                  else round(metrics.profit_factor, 4)),
+                "gross_pnl": round(metrics.gross_pnl, 2),
+                "net_pnl": round(metrics.net_pnl, 2),
+                "max_drawdown_pct": round(metrics.max_drawdown_pct, 4),
+                "max_consecutive_losses": metrics.max_consecutive_losses,
+                "total_cost": round(metrics.total_cost, 2),
+                "expectancy_ci_low": metrics.expectancy_ci_low,
+                "expectancy_ci_high": metrics.expectancy_ci_high,
+                "bootstrap": {"seed": metrics.bootstrap_seed,
+                              "resamples": metrics.bootstrap_resamples,
+                              "block": metrics.bootstrap_block},
+                "frozen_gate_status": {g.name: g.status for g in evaluate_gates(metrics)},
+            }
+            write_trade_csv(owned, output_dir / f"trades_{variant}_{segment.name}.csv")
+        report["segments"].append({"name": segment.name, "start": segment.start, "end": segment.end})
+
+    (output_dir / "exploratory_results.json").write_text(
+        json.dumps(report, indent=2, default=str), encoding="utf-8"
+    )
+    return report

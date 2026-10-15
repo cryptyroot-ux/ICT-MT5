@@ -490,3 +490,54 @@ def lifecycle_net_pnl(deals: Iterable[TradeDeal], position_id: int, magic: int) 
         for deal in deals
         if deal.position_id == position_id and deal.magic == magic
     )
+
+
+def detect_bos_sequence(bars: Sequence[Bar], span: int = 2) -> list[StructureBreak]:
+    """Return every confirmed close-only break in chronological order.
+
+    Used for long backtests: `detect_bos` returns only the most recent break,
+    which would silently restrict a multi-year run to a single signal window.
+    """
+    highs, lows = confirmed_pivots(bars, span)
+    high_by_confirmation: dict[int, list[Pivot]] = {}
+    low_by_confirmation: dict[int, list[Pivot]] = {}
+    for pivot in highs:
+        high_by_confirmation.setdefault(pivot.confirmation_index, []).append(pivot)
+    for pivot in lows:
+        low_by_confirmation.setdefault(pivot.confirmation_index, []).append(pivot)
+
+    latest_high: Pivot | None = None
+    latest_low: Pivot | None = None
+    broken_highs: set[int] = set()
+    broken_lows: set[int] = set()
+    events: list[StructureBreak] = []
+
+    for index, candle in enumerate(bars):
+        if not candle.complete:
+            continue
+        bullish = (
+            latest_high is not None
+            and latest_high.time not in broken_highs
+            and index > latest_high.confirmation_index
+            and candle.close > latest_high.price
+        )
+        bearish = (
+            latest_low is not None
+            and latest_low.time not in broken_lows
+            and index > latest_low.confirmation_index
+            and candle.close < latest_low.price
+        )
+        if bullish and bearish:
+            pass  # Structurally ambiguous: no event for this candle.
+        elif bullish:
+            broken_highs.add(latest_high.time)
+            events.append(StructureBreak(Direction.BUY, latest_high.price, latest_high.time, candle.time))
+        elif bearish:
+            broken_lows.add(latest_low.time)
+            events.append(StructureBreak(Direction.SELL, latest_low.price, latest_low.time, candle.time))
+
+        if index in high_by_confirmation:
+            latest_high = high_by_confirmation[index][-1]
+        if index in low_by_confirmation:
+            latest_low = low_by_confirmation[index][-1]
+    return events

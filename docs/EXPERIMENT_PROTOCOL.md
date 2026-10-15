@@ -33,6 +33,21 @@ Use confidence intervals for expectancy and relevant ratios; use a block bootstr
 
 Re-run the frozen model with exact configuration diffs: baseline spread, +50% spread, baseline slippage, +100% slippage, realistic verified commissions/swaps, adverse rejects/delayed fills/partial fills, and chronological volatile regimes. Broker-spec sensitivity runs are valid only with measured properties; do not fabricate specifications.
 
+## Empirical finding that must be resolved before any OOS claim
+
+Implemented exactly as frozen and measured on the only real HFM export available
+(`docs/VALIDATION_REPORT.md` §4.2), the frozen stop rule and the frozen target rule are
+mutually near-unsatisfiable: the next opposing confirmed liquidity level sits a median
+of **0.06 R** from a sweep-extreme ± 0.5 × M5 ATR(14) stop, and only **0.10 %** of
+events reach raw R ≥ 3. Net R:R ≥ 3 additionally requires `reward ≥ 3·risk + 4·cost`,
+so any positive transaction cost makes acceptance strictly harder. B0–B3 therefore
+produce statistically insignificant trade counts and every gate is INCONCLUSIVE.
+
+Resolving this requires an explicit specification change and a re-freeze. Loosening a
+threshold, widening a stop opportunistically, or switching to a manufactured target to
+manufacture trade count is prohibited, because each of those changes the strategy while
+leaving its name intact.
+
 ## Evidence currently available
 
 - Upstream's historical Python experiments are not valid strategy results: they include synthetic generated prices, Yahoo gold futures rather than broker XAUUSD, seeded random outcomes, non-equivalent exits, missing costs, and/or look-ahead behavior (see `SOURCE_AUDIT.md`).

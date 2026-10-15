@@ -212,3 +212,95 @@ class BaselineVariantTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PnlUnitConsistencyTests(unittest.TestCase):
+    """Regression: PnL must be account currency, matching the tick-value model used for risk."""
+
+    def _bars(self):
+        # Entry at bar 1 close (100.0); stop 99.00; target 103.00; bar 2 hits the stop.
+        return [
+            Bar(0, 100.0, 101.0, 99.5, 100.0),
+            Bar(300, 100.0, 100.5, 99.8, 100.2),
+            Bar(600, 100.0, 100.2, 98.5, 98.8),
+        ]
+
+    def _manifest(self, tick_value):
+        return manifest(tick_size=0.01, tick_value_loss=tick_value, tick_value_profit=tick_value,
+                        volume_min=0.01, volume_max=10.0, volume_step=0.01)
+
+    def _run_one(self, tick_value):
+        from research.experiment import Trade, _resolve_exits
+        t = Trade("s", "B3", "BUY", 300, 100.2, 99.0, 103.0, 1.0, 120.0, 300, "open", 0.0, 360.0, 0.0, 0)
+        return _resolve_exits(self._bars(), [t], 10, self._manifest(tick_value))[0]
+
+    def test_pnl_is_not_a_bare_price_delta_times_volume(self):
+        trade = self._run_one(17904.14)
+        # A stop at -1.20 price units on 1.0 lot with 17904.14 IDR per 0.01 tick
+        # must be about -1.20 * (17904.14/0.01) IDR, not -1.20 IDR.
+        expected = -1.20 * (17904.14 / 0.01)
+        self.assertAlmostEqual(trade.pnl, expected, places=6)
+        self.assertNotAlmostEqual(trade.pnl, -1.20, places=3)
+
+    def test_r_multiple_is_scale_invariant_and_pnl_scales_with_tick_value(self):
+        # tick_value 1.00 per 0.01 tick -> 100 monetary units per price unit.
+        low = self._run_one(1.0)
+        self.assertAlmostEqual(low.pnl, -1.20 * 100.0, places=6)
+
+        # tick_value 17904.14 per 0.01 tick -> 1_790_414 IDR per price unit.
+        high = self._run_one(17904.14)
+        self.assertAlmostEqual(high.pnl, -1.20 * (17904.14 / 0.01), places=3)
+        self.assertAlmostEqual(high.pnl / low.pnl, (17904.14 / 0.01) / 100.0, places=4)
+
+        # Same geometry and a proportionally scaled risk budget -> identical R multiple.
+        low_t = self._run_one(1.0)
+        low_t.risk_amount = 1.20 * 100.0
+        high_t = self._run_one(17904.14)
+        high_t.risk_amount = 1.20 * (17904.14 / 0.01)
+        self.assertAlmostEqual(low_t.r_multiple, high_t.r_multiple, places=6)
+
+    def test_timeout_exit_is_filled_at_market_not_zero(self):
+        from research.experiment import Trade, _resolve_exits
+        bars = [Bar(0, 100.0, 101.0, 99.5, 100.0), Bar(300, 100.0, 100.5, 99.9, 100.4)]
+        t = Trade("s", "B3", "BUY", 300, 100.2, 90.0, 120.0, 1.0, 120.0, 300, "open", 0.0, 360.0, 0.0, 0)
+        out = _resolve_exits(bars, [t], 5, self._manifest(1.0))[0]
+        self.assertEqual(out.exit_reason, "timeout")
+        # Close 100.4 vs entry 100.2 = +0.20 price units x 100.0 units/price unit.
+        self.assertAlmostEqual(out.pnl, 0.20 * 100.0, places=6)
+        self.assertNotEqual(out.pnl, 0.0)
+
+
+class OrderLifetimeWindowTests(unittest.TestCase):
+    """Regression: a pending order only ever sees bars inside its own lifetime."""
+
+    def _bars(self):
+        # 12 consecutive M5 bars starting at the reference time.
+        return [Bar(300 + 300 * i, 100, 101, 99, 100) for i in range(12)]
+
+    def test_window_stops_at_expiry_and_excludes_later_bars(self):
+        from research.experiment import order_lifetime_bars
+
+        cfg = FrozenConfig()
+        bars = self._bars()
+        window = order_lifetime_bars(bars, 0, 300, cfg)
+        expiry = 300 + cfg.pending_expiry_seconds
+        self.assertTrue(window)
+        for bar in window:
+            self.assertGreaterEqual(bar.time, 300)
+            self.assertLess(bar.time, expiry)
+
+    def test_a_bar_beyond_expiry_is_never_returned(self):
+        from research.experiment import order_lifetime_bars
+
+        cfg = FrozenConfig()
+        bars = self._bars()
+        expiry = 300 + cfg.pending_expiry_seconds
+        far = [Bar(expiry + 3600 * i, 100, 101, 99, 100) for i in range(10)]
+        self.assertEqual(order_lifetime_bars(far, 0, 300, cfg), [])
+
+    def test_window_is_shorter_than_the_whole_series(self):
+        from research.experiment import order_lifetime_bars
+
+        cfg = FrozenConfig()
+        bars = self._bars()
+        self.assertLess(len(order_lifetime_bars(bars, 0, 300, cfg)), len(bars))

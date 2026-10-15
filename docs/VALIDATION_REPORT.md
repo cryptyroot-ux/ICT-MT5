@@ -83,28 +83,93 @@ threshold is met, CI absent for tiny samples, CSV round-trip, and B0 refusal.
 
 ## 4. Quantitative results
 
+### 4.1 Evidence actually available
+
+A real HFM bar export exists on the authoring host (M5 591,777 rows 2017-10-17 →
+2026-10-15; H1 53,028 rows 2017-10-11 → 2026-10-15; sha256-verified in the run
+manifest). It was used for an **exploratory bar-model** analysis. Its limitations are
+material and are listed in §4.3.
+
+| Property of that dataset | Value |
+|---|---|
+| Server | `HFMarketsGlobal-Demo4` |
+| Account | `#Centz - Ari Susanto` — a **Cent** account, currency **IDR** |
+| Target account | **HFM Pro — not this account** |
+| Data type | broker **bar** export; per-bar `spread_points` is 0 in older segments |
+| Historical Bid/Ask ticks | not available (six of six historic 1-hour `CopyTicksRange` windows returned `NO_DATA`; only a recent control worked) |
+| Commission / fees | **not measured** |
+| Slippage | **not measured** |
+
+`research/experiment.py` classifies this as `EXPLORATORY_BAR_MODEL` with
+`oos_claim_permitted = false` and refuses it for any out-of-sample claim.
+
+### 4.2 The decisive finding: the frozen rules are mutually near-unsatisfiable
+
+With the strategy implemented exactly as frozen — stop at the sweep extreme ± 0.5 ×
+M5 ATR(14), target at the **next opposing confirmed liquidity level**, acceptance
+requiring **net R:R ≥ 3.00** — the two rules are in severe tension on this data.
+Measured over 984 qualifying OOS sweep events:
+
+| Raw R multiple of next-liquidity target vs sweep-extreme stop | Value |
+|---|---|
+| sample | 984 |
+| minimum | 0.00 |
+| p10 / p25 | 0.01 / 0.03 |
+| **median** | **0.06** |
+| p75 / p90 / p99 | 0.16 / 0.45 / 1.39 |
+| maximum | 3.63 |
+| share with raw R ≥ 3.0 | **0.10 %** |
+| share with raw R ≥ 6.0 | 0.00 % |
+| median stop distance | 1.718 price units |
+
+The nearest opposing liquidity level is typically only ~6 % of the stop distance away.
+Because net R:R is `(reward − cost) / (risk + cost)`, requiring net ≥ 3 forces
+`reward ≥ 3·risk + 4·cost`, so any positive transaction cost makes acceptance strictly
+harder. Consequence, measured on the OOS segment:
+
+| Cost charged per lot | B1 | B2 | B3 |
+|---|---:|---:|---:|
+| none (unmeasured baseline) | 1 trade | 1 trade | 2 trades |
+| median broker spread × 2 crossings | 0 | 0 | 0 |
+| 10× median × 2 | 0 | 0 | 0 |
+| 100× median × 2 | 0 | 0 | 0 |
+
+**Therefore B0, B1, B2, and B3 as literally specified produce statistically
+insignificant trade counts on this data, and every frozen acceptance gate is
+INCONCLUSIVE.** This is a property of the specification, not of the implementation: the
+code faithfully implements what the specification says.
+
+> **Correction of an earlier intermediate result.** An earlier harness revision
+> manufactured a target at exactly 3.0 × the stop distance, which by construction can
+> never satisfy the net-cost gate and produced ~554 apparently strong trades. That run
+> measured a *different* strategy than the frozen specification and is **not** reported
+> as B3 evidence. It is superseded by this section.
+
+### 4.3 Variant metrics
+
 | Variant | Trade count | Expectancy | Profit factor | Max DD | Win rate | Costs | OOS | CI | Stress |
 |---|---|---|---|---|---|---|---|---|---|
-| B0 | — | — | — | — | — | — | — | — | — |
-| B1 | — | — | — | — | — | — | — | — | — |
-| B2 | — | — | — | — | — | — | — | — | — |
-| B3 | — | — | — | — | — | — | — | — | — |
+| B0 | not run | — | — | — | — | — | — | — | — |
+| B1 | 1 (OOS) | n/a | n/a | 0.00 % | 100 % (n=1) | unmeasured | not claimed | n/a | collapses to 0 with any cost |
+| B2 | 1 (OOS) | n/a | n/a | 0.00 % | 100 % (n=1) | unmeasured | not claimed | n/a | collapses to 0 with any cost |
+| B3 | 2 (OOS) | n/a | n/a | 0.00 % | 100 % (n=2) | unmeasured | not claimed | n/a | collapses to 0 with any cost |
 
-All cells are **NOT VERIFIED / INCONCLUSIVE**. No B0–B3 run was executed, for two
-independent reasons:
+B0 could not be run at all: the legacy EA does not compile as received (AUD-001) and
+is preserved unmodified, so re-implementing it in Python would not be "the original
+baseline".
 
-1. No HFM Pro account or verified symbol specification was available, so no broker tick
-   export exists and `research/experiment.py` refuses the run at the manifest gate.
-2. B0 cannot be produced by the Python harness at all. The legacy EA does not compile as
-   received (AUD-001) and is preserved unmodified; re-implementing it in Python would
-   not be "the original baseline". B0 requires a documented technical repair plus a
-   MetaEditor/Strategy Tester run.
+The checked-in upstream Python artifacts remain **not** evidence: synthetic prices,
+Yahoo `GC=F`, a seeded random outcome draw, fixed ±1R/3R PnL regardless of exit
+distance, missing costs, and look-ahead reuse of full-sample state (AUD-012).
 
-The checked-in upstream Python artifacts (`docs/*_trades.csv`, `stress_test_summary.csv`,
-`equity_curve.csv`, the Demo GIF) are **not** evidence for any row above. They contain
-synthetic generated prices, Yahoo `GC=F` gold futures, a seeded random outcome draw for
-NAS100/US30, fixed ±1R/3R PnL regardless of the actual exit distance, missing
-transaction costs, and look-ahead reuse of full-sample state — see AUD-012.
+### 4.4 What was measured and found sound
+
+- Within-bar stop/target ambiguity (both levels inside the same bar, so ordering is
+  unknowable from OHLC) is **negligible** on this data: 0.00 %–0.22 % of trades per
+  variant/segment. This bias does not materially inflate the numbers above.
+- The BOS replay produces 5,037 structural break events across the 9-year H1 series,
+  with both bullish and bearish breaks present, so signal scarcity is caused by the
+  target/R:R rules rather than by a broken structure detector.
 
 ## 5. Acceptance gates
 
@@ -113,10 +178,10 @@ not relaxed, reinterpreted, or averaged.
 
 | Gate | Threshold | Measured | Status |
 |---|---|---|---|
-| Net expectancy | ≥ +0.25R/trade | not measured | **INCONCLUSIVE** |
-| Profit factor | ≥ 1.50 | not measured | **INCONCLUSIVE** |
-| Max equity drawdown | < 12 % | not measured | **INCONCLUSIVE** |
-| Completed trades | ≥ 100 | 0 | **INCONCLUSIVE** |
+| Net expectancy | ≥ +0.25R/trade | not measurable (B3 OOS n = 2) | **INCONCLUSIVE** |
+| Profit factor | ≥ 1.50 | not measurable (B3 OOS n = 2) | **INCONCLUSIVE** |
+| Max equity drawdown | < 12 % | not measurable (B3 OOS n = 2) | **INCONCLUSIVE** |
+| Completed trades | ≥ 100 | B3 OOS = 2 | **INCONCLUSIVE** |
 | Mandatory risk limits correct | all correct | not runtime-verified | **NOT VERIFIED** |
 | No unresolved critical execution/accounting defects | none | see §6 | **NOT VERIFIED** |
 
@@ -149,6 +214,17 @@ averaging.
    between the two has not been machine-verified; the MQL5 EA is the authority for
    trading and the Python model is only for fixtures and data gating.
 8. **Strategy Tester visual/behavioral review** of the EA has not occurred.
+9. **Specification tension (highest-priority finding, §4.2).** The frozen stop rule
+   (sweep extreme ± 0.5 × M5 ATR(14)) combined with the frozen target rule (next
+   opposing liquidity) yields a median raw R of only 0.06, and 0.10 % of events reach
+   R ≥ 3. As specified, the strategy is near-untradeable. This must be resolved by an
+   explicit specification decision, not by adjusting an acceptance threshold. Candidate
+   resolutions, none of which may be applied without a new documented version:
+   (a) widen the stop budget so the risk unit is smaller relative to the next liquidity
+   distance; (b) define the target as the next *significant* opposing liquidity level
+   rather than the immediately nearest pivot; (c) lower the net R:R requirement and
+   re-freeze it before any out-of-sample evaluation. Any of these changes the strategy
+   definition and therefore invalidates the current freeze.
 
 ## 7. What must happen before demo or live consideration
 
@@ -168,3 +244,8 @@ averaging.
 8. Re-review the full diff and obtain independent review before any live consideration.
 
 **No profitability claim is made. This project is RESEARCH / DEMO ONLY.**
+
+**Bottom line:** the engineering work (audit, EA, risk control, accounting, tests) is
+implemented and statically verified. The *strategy as frozen* is, however, near-untradeable
+on the only real data available, so there is nothing to declare profitable — and the
+blocking issue is a specification decision, not an implementation defect.

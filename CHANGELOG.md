@@ -61,11 +61,31 @@ non-equivalent exits.
 
 ### Verification status at this commit
 
-- Deterministic tests: 54 passed (executed).
+- Deterministic tests: 62 passed (executed).
 - MQL5 compilation: **NOT VERIFIED** — no MetaEditor binary available on the authoring host.
 - Broker specification: **NOT VERIFIED** — no HFM Pro account or symbol export available.
 - B0–B3 quantitative results and all frozen acceptance gates: **INCONCLUSIVE**.
 - Status: **RESEARCH / DEMO ONLY**. No profitability claim.
+
+### Follow-up: exploratory bar-model analysis on the real HFM export
+
+An HFM Demo4 **Cent/IDR** bar export (M5 591,777 rows, 2017-10-17 → 2026-10-15) was
+available and was used for a clearly labeled `EXPLORATORY_BAR_MODEL` analysis that
+`research/experiment.py` refuses to treat as an out-of-sample claim.
+
+Headline finding: with the strategy implemented exactly as frozen, the **next opposing
+liquidity target sits a median 0.06 R from the sweep-extreme ± 0.5 × ATR(14) stop**, and
+only **0.10 %** of events reach raw R ≥ 3. Because net R:R ≥ 3 requires
+`reward ≥ 3·risk + 4·cost`, every variant produces 0–2 out-of-sample trades and collapses
+to **zero trades with any positive transaction cost**. B0–B3 are therefore all
+INCONCLUSIVE, and the blocking issue is a **specification tension, not an implementation
+defect**. Resolution requires an explicit, re-frozen specification decision.
+
+Two harness defects were found by this analysis and fixed, each with a regression test:
+(1) PnL was computed as a bare `price_delta × volume` instead of converting through the
+broker tick value, which silently produced R multiples around 1e-6; (2) FVG validity was
+evaluated against the entire future history instead of the order's lifetime window,
+rejecting 1,609 of 1,627 otherwise valid gaps.
 
 ---
 

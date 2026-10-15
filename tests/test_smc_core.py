@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 from research.smc_core import (
     Bar,
@@ -12,6 +13,7 @@ from research.smc_core import (
     confirmed_pivots,
     daily_loss_reached,
     detect_bos,
+    detect_bos_sequence,
     detect_fvg,
     detect_sweep_reclaim,
     fvg_status,
@@ -245,3 +247,45 @@ class StateRiskAndLedgerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BosSequenceTests(unittest.TestCase):
+    """Sequence replay must expose every break, not just the most recent one."""
+
+    H1_SERIES = Path("/root/BBMA OMA ALI/data/raw/XAUUSD_HFM_H1_20261015_022415_482518984.csv")
+
+    def _real_h1(self, limit=4000):
+        if not self.H1_SERIES.is_file():
+            self.skipTest("broker H1 export not present on this host")
+        import csv as _csv
+        import datetime as _dt
+
+        bars = []
+        with self.H1_SERIES.open(newline="", encoding="utf-8") as handle:
+            for i, row in enumerate(_csv.DictReader(handle)):
+                if i >= limit:
+                    break
+                parts = row["datetime"].strip().split()
+                stamp = _dt.datetime.strptime(" ".join(parts), "%Y.%m.%d %H:%M:%S")
+                bars.append(Bar(int(stamp.timestamp()), float(row["open"]),
+                                float(row["high"]), float(row["low"]),
+                                float(row["close"]), complete=True))
+        return bars
+
+    def test_sequence_exposes_every_break_and_agrees_with_single_event_lookup(self):
+        bars = self._real_h1()
+        events = detect_bos_sequence(bars, span=2)
+        self.assertGreater(len(events), 5,
+                           "a multi-year H1 series must yield many structural breaks")
+        self.assertEqual([e.confirmation_time for e in events],
+                         sorted(e.confirmation_time for e in events))
+        latest = detect_bos(bars, span=2)
+        self.assertIsNotNone(latest)
+        self.assertEqual(events[-1], latest)
+        directions = {e.direction for e in events}
+        self.assertEqual(directions, {Direction.BUY, Direction.SELL},
+                         "both bullish and bearish breaks must be discoverable")
+
+    def test_single_break_lookup_would_undercount_a_long_series(self):
+        bars = self._real_h1()
+        self.assertLess(1, len(detect_bos_sequence(bars, span=2)))
