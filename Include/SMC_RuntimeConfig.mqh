@@ -18,10 +18,11 @@
 //+------------------------------------------------------------------+
 void SMCApplyRuntimeConfig(string &symbol,long &magic,double &risk_percent,
                            double &daily_loss_percent,bool &cost_model_verified,
+                           bool &observe_only,
                            double &commission_per_lot,double &slippage_per_lot,
                            int &log_level)
   {
-   string path="SMC_V2.cfg";
+   string path=SMC_RUNTIME_CONFIG_NAME;
    if(!FileIsExist(path))
       return;
 
@@ -47,6 +48,7 @@ void SMCApplyRuntimeConfig(string &symbol,long &magic,double &risk_percent,
       else if(key=="RISK_PCT")     risk_percent=StringToDouble(value);
       else if(key=="DAILY_LOSS_PCT") daily_loss_percent=StringToDouble(value);
       else if(key=="COST_VERIFIED")cost_model_verified=(StringToDouble(value)!=0.0);
+      else if(key=="OBSERVE_ONLY") observe_only=(StringToDouble(value)!=0.0);
       else if(key=="COMMISSION_PER_LOT") commission_per_lot=StringToDouble(value);
       else if(key=="SLIPPAGE_PER_LOT")   slippage_per_lot=StringToDouble(value);
       else if(key=="LOG_LEVEL")     log_level=(int)StringToInteger(value);

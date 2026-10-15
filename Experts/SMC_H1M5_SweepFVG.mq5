@@ -19,7 +19,7 @@
 
 input group "=== SMC-H1M5-SweepFVG / XAUUSD ==="
 input string         InpSMCSymbol                         = "XAUUSD";
-input long           InpSMCMagic                          = 15101501;
+input long           InpSMCMagic                          = SMC_V2_MAGIC;
 input double         InpSMCRiskPercent                    = SMC_DEFAULT_RISK_PERCENT;
 input double         InpSMCDailyLossPercent               = SMC_DAILY_LOSS_PERCENT;
 
@@ -27,6 +27,9 @@ input group "=== VERIFIED TRANSACTION COSTS ==="
 input bool           InpSMCCostModelVerified              = false;
 input double         InpSMCRoundTurnCommissionPerLot      = 0.0;
 input double         InpSMCRoundTurnSlippagePerLot        = 0.0;
+
+input group "=== V2 SAFETY MODE ==="
+input bool           InpSMCObserveOnly                    = true;
 
 input group "=== LOGGING ==="
 input SMC_LOG_LEVEL  InpSMCLogLevel                       = SMC_LOG_INFO;
@@ -38,8 +41,10 @@ input SMC_LOG_LEVEL  InpSMCLogLevel                       = SMC_LOG_INFO;
 //| forward test akan mencatat risiko yang berbeda dari yang benar-benar dipakai.
 double   g_cfg_risk_percent=SMC_DEFAULT_RISK_PERCENT;
 double   g_cfg_daily_loss_percent=SMC_DAILY_LOSS_PERCENT;
-long     g_cfg_magic=15101501;
+long     g_cfg_magic=SMC_V2_MAGIC;
 string   g_cfg_symbol="XAUUSD";
+bool     g_cfg_cost_verified=false;
+bool     g_cfg_observe_only=true;
 CSMCMarketStructure  g_smc_market;
 CSMCLiquidity        g_smc_liquidity;
 CSMCDisplacement     g_smc_displacement;
@@ -106,6 +111,14 @@ bool LoadLatestClosedM5(MqlRates &bar)
    return (bar.time>0);
   }
 
+double CurrentSpreadPrice()
+  {
+   MqlTick tick;
+   if(!SymbolInfoTick(g_cfg_symbol,tick) || tick.ask<tick.bid)
+      return 0.0;
+   return tick.ask-tick.bid;
+  }
+
 bool BiasStillValid() 
   {
    if(!g_smc_market.Refresh())
@@ -162,7 +175,7 @@ void InvalidateCurrentSetup(const string reason,const bool expired=false)
      }
    if(g_smc_setup.state==SMC_IN_POSITION)
      {
-      g_smc_execution.CancelResidualOrder(g_smc_setup,g_smc_logger,reason,InpSMCRiskPercent);
+      g_smc_execution.CancelResidualOrder(g_smc_setup,g_smc_logger,reason,g_cfg_risk_percent);
       return; // Existing position retains server-side SL/TP; the daily entry gate never closes it.
      }
    LogTransition(expired ? SMC_EXPIRED : SMC_INVALIDATED,ServerNow(),
@@ -220,6 +233,19 @@ void HandleNewClosedM5()
                          0.0,g_cfg_risk_percent,0,"daily_equity_reference_unreliable");
       return;
      }
+
+   //--- Telemetri per bar tertutup --------------------------------------------
+   //| Tanpa baris ini tidak ada bukti bahwa loop bar benar-benar berjalan pada
+   //| build yang sedang observe. Satu baris per bar M5 tertutup.
+   MqlRates processed_bar;
+   ZeroMemory(processed_bar);
+   const bool have_processed_bar=LoadLatestClosedM5(processed_bar);
+   const string processed_reason=StringFormat("bar=%s;state=%s",
+      have_processed_bar ? TimeToString(processed_bar.time,TIME_DATE|TIME_MINUTES) : "none",
+      SMCStateName(g_smc_setup.state));
+   g_smc_logger.Write(g_smc_setup,"m5_bar_processed",SMCStateName(g_smc_setup.state),
+                      CurrentSpreadPrice(),g_cfg_risk_percent,0,processed_reason);
+   //---------------------------------------------------------------------------
 
    if(g_smc_setup.state==SMC_COMPLETED || g_smc_setup.state==SMC_INVALIDATED ||
       g_smc_setup.state==SMC_EXPIRED)
@@ -404,7 +430,8 @@ void HandleNewClosedM5()
          InvalidateCurrentSetup("v2_tick_unavailable");
          return;
         }
-      if(!SMC_SessionAllowed(g_cfg_symbol))
+      const datetime decision_bar_time=iTime(g_cfg_symbol,SMC_EXECUTION_TF,0);
+      if(!SMC_SessionAllowedCached(g_cfg_symbol,decision_bar_time))
         {
          InvalidateCurrentSetup("v2_outside_high_conviction_session");
          return;
@@ -425,20 +452,39 @@ void HandleNewClosedM5()
          return;
         }
       entry=SMCRoundToTick(entry,tick_size);
-      //--- SL floor V2 + TP tetap 3R ----------------------------------------
-      // Spec yang divalidasi memakai TP 3R. Model "next liquidity target"
-      // diuji di B0-B3 dan menghasilkan 0-2 trade OOS karena targetnya
-      // hanya ~0.06R dari stop, jadi net R:R 3 mustahil tercapai.
-      double v2_distance=SMC_WidenedStopDistance(MathAbs(g_smc_setup.sweep_extreme-g_smc_setup.atr_value*0.5-entry),
-                                                 g_smc_setup.atr_value);
-      const double v2_atr_factor=SMC_V2_ATR_SL_MULTIPLIER;
-      double v2_atr_sl=g_smc_setup.atr_value*v2_atr_factor;
-      v2_distance=MathMax(v2_distance,v2_atr_sl);
-      v2_distance=MathMax(v2_distance,SMC_V2_MIN_SL_PRICE);
-      const double v2_direction=(v2_is_buy ? 1.0 : -1.0);
-      g_smc_setup.take_profit=entry+v2_direction*SMC_V2_FIXED_TP_R*v2_distance;
-      g_smc_setup.stop_loss=entry-v2_direction*v2_distance;
+      //--- SL/TP final V2 ------------------------------------------------------
+      //| SMC_ProtectionLevels adalah satu-satunya sumber kebenaran. Nilai lama di
+      //| sini menghitung ulang jarak secara manual dan tidak sama dengan model
+      //| Python; sekarang keduanya memakai fungsi yang identik dengan golden vector.
+      double v2_stop=0.0,v2_target=0.0;
+      if(!SMC_ProtectionLevels(g_smc_setup.direction,entry,g_smc_setup.sweep_extreme,
+                               g_smc_setup.atr_value,tick_size,v2_stop,v2_target))
+        {
+         InvalidateCurrentSetup("v2_protection_levels_unavailable");
+         return;
+        }
+      g_smc_setup.stop_loss=v2_stop;
+      g_smc_setup.take_profit=v2_target;
       //------------------------------------------------------------------------
+      //--- Observe-only gate ---------------------------------------------------
+      //| Biaya broker belum diverifikasi, jadi tidak boleh ada order yang dikirim.
+      //| Kandidat yang lolos filter tetap dicatat supaya telemetri tetap berjalan,
+      //| lalu state berakhir supaya kandidat yang sama tidak dicatat ulang tiap tick.
+      g_smc_setup.entry_price=entry;
+      if(g_cfg_observe_only)
+        {
+         MqlTick observe_tick;
+         double observe_spread=0.0;
+         if(SymbolInfoTick(g_cfg_symbol,observe_tick))
+            observe_spread=observe_tick.ask-observe_tick.bid;
+         g_smc_logger.Write(g_smc_setup,"observe_only_candidate",
+                            SMCStateName(g_smc_setup.state),observe_spread,
+                            g_cfg_risk_percent,0,
+                            "transaction_costs_unverified_observe_only");
+         LogTransition(SMC_EXPIRED,ServerNow(),"setup_expired",
+                       "observe_only_candidate_recorded_no_order_submitted");
+         return;
+        }
       if(g_smc_execution.SubmitMidpointLimit(g_smc_setup,g_smc_states,g_smc_risk,
                                              g_smc_ledger,g_smc_logger,g_cfg_risk_percent))
          return;
@@ -448,7 +494,7 @@ void HandleNewClosedM5()
      }
   }
 
-void ManagePendingSetup(const bool new_m5_bar)
+void ManagePendingSetup()
   {
    if(g_smc_setup.state==SMC_ORDER_PENDING)
      {
@@ -477,35 +523,10 @@ void ManagePendingSetup(const bool new_m5_bar)
          InvalidateCurrentSetup(invalid_reason);
          return;
         }
-      if(!new_m5_bar)
-         return;
-
-      double updated_target=0.0;
-      datetime target_time=0;
-      if(!g_smc_liquidity.FindNextLiquidity(g_smc_setup.direction,g_smc_setup.entry_price,
-                                            updated_target,target_time))
-        {
-         InvalidateCurrentSetup("next_liquidity_target_disappeared");
-         return;
-        }
-      MqlTick tick;
-      if(!SymbolInfoTick(g_cfg_symbol,tick))
-         return;
-      double updated_rr=0.0;
-      if(!g_smc_risk.CalculateNetRewardRisk(g_smc_setup.direction,g_smc_setup.entry_price,
-                                           g_smc_setup.stop_loss,updated_target,g_smc_setup.volume,
-                                           tick.ask-tick.bid,updated_rr) || updated_rr<SMC_MIN_NET_RR)
-        {
-         InvalidateCurrentSetup("changed_liquidity_target_fails_net_1_to_3_gate");
-         return;
-        }
-      const double tick_size=SymbolInfoDouble(g_cfg_symbol,SYMBOL_TRADE_TICK_SIZE);
-      if(tick_size>0.0 && MathAbs(updated_target-g_smc_setup.take_profit)>=tick_size)
-        {
-         if(!g_smc_execution.ModifyPendingTarget(g_smc_setup,g_smc_logger,updated_target,
-                                                 target_time,updated_rr,g_cfg_risk_percent))
-            InvalidateCurrentSetup("liquidity_target_changed_but_pending_order_modify_failed");
-        }
+      //--- V2: target tetap 3R, tidak pernah diubah ke liquidity berikutnya ---
+      //| Perilaku "next liquidity target" milik B3 diuji di B0-B3 dan menghasilkan
+      //| target hanya ~0.06R dari stop. V2 membekukan target 3R, jadi blok retarget
+      //| dihapus: pending order hanya governed expiry dan invalidasi gap.
      }
    else if(g_smc_setup.state==SMC_IN_POSITION)
      {
@@ -523,11 +544,11 @@ void ManagePendingSetup(const bool new_m5_bar)
          string invalid_reason="";
          if(CurrentSetupInvalid(gap,latest,invalid_reason))
             g_smc_execution.CancelResidualOrder(g_smc_setup,g_smc_logger,
-                                                invalid_reason,InpSMCRiskPercent);
+                                                invalid_reason,g_cfg_risk_percent);
         }
       if(g_smc_risk.DailyLossReached())
          g_smc_execution.CancelResidualOrder(g_smc_setup,g_smc_logger,
-                                             "daily_loss_cap_cancelled_unfilled_remainder",InpSMCRiskPercent);
+                                             "daily_loss_cap_cancelled_unfilled_remainder",g_cfg_risk_percent);
       if(!g_smc_ledger.HasOwnedPosition())
         {
          double pnl=0.0;
@@ -564,8 +585,8 @@ void ProcessSMC()
    if(new_m5_bar)
       g_smc_last_m5_forming_bar=forming_time;
 
-   g_smc_execution.Reconcile(g_smc_setup,g_smc_states,g_smc_ledger,g_smc_logger,InpSMCRiskPercent);
-   ManagePendingSetup(new_m5_bar);
+   g_smc_execution.Reconcile(g_smc_setup,g_smc_states,g_smc_ledger,g_smc_logger,g_cfg_risk_percent);
+   ManagePendingSetup();
    if(!new_m5_bar || g_smc_setup.state==SMC_ORDER_PENDING ||
       g_smc_setup.state==SMC_IN_POSITION || g_smc_execution.HasUnresolvedRequest())
       return;
@@ -589,27 +610,41 @@ int OnInit()
    double cfg_risk=InpSMCRiskPercent;
    double cfg_daily_loss=InpSMCDailyLossPercent;
    bool   cfg_cost_verified=InpSMCCostModelVerified;
+   bool   cfg_observe_only=InpSMCObserveOnly;
    double cfg_commission=InpSMCRoundTurnCommissionPerLot;
    double cfg_slippage=InpSMCRoundTurnSlippagePerLot;
    int    cfg_log_level=(int)InpSMCLogLevel;
    SMCApplyRuntimeConfig(cfg_symbol,cfg_magic,cfg_risk,cfg_daily_loss,
-                         cfg_cost_verified,cfg_commission,cfg_slippage,cfg_log_level);
+                         cfg_cost_verified,cfg_observe_only,
+                         cfg_commission,cfg_slippage,cfg_log_level);
    g_cfg_symbol=cfg_symbol;
    g_cfg_magic=cfg_magic;
    g_cfg_risk_percent=cfg_risk;
    g_cfg_daily_loss_percent=cfg_daily_loss;
+   g_cfg_cost_verified=cfg_cost_verified;
+   g_cfg_observe_only=cfg_observe_only;
    PrintFormat("[SMC] runtime config: symbol=%s magic=%I64d risk=%.4f "
-               "daily_loss=%.4f cost_verified=%d commission=%.4f slippage=%.4f log=%d",
+               "daily_loss=%.4f cost_verified=%d observe_only=%d commission=%.4f slippage=%.4f log=%d",
                cfg_symbol,cfg_magic,cfg_risk,cfg_daily_loss,
-               (int)cfg_cost_verified,cfg_commission,cfg_slippage,cfg_log_level);
+               (int)cfg_cost_verified,(int)cfg_observe_only,
+               cfg_commission,cfg_slippage,cfg_log_level);
    //------------------------------------------------------------------------
 
    if(!g_smc_logger.Init(cfg_symbol,cfg_magic,cfg_risk,
                          SMC_MAX_SPREAD_PRICE,cfg_commission,
-                         cfg_slippage,cfg_cost_verified,(SMC_LOG_LEVEL)cfg_log_level))
+                         cfg_slippage,cfg_cost_verified,cfg_observe_only,
+                         (SMC_LOG_LEVEL)cfg_log_level))
      {
       Print("[SMC] init failed: event CSV cannot be opened");
       return INIT_FAILED;
+     }
+   if(!SMC_V2ProtectionSelfTest())
+     {
+      Print("[SMC] init failed: v2_protection_self_test_failed");
+      g_smc_states.Reset(g_smc_setup,ServerNow());
+      g_smc_logger.Write(g_smc_setup,"configuration_rejected","INIT",0.0,
+                         cfg_risk,0,"v2_protection_self_test_failed");
+      return INIT_PARAMETERS_INCORRECT;
      }
    // Spec symbol bisa belum siap pada OnInit pertama. Tunggu dulu, dan kalau
    // tetap gagal cetak properti apa adanya supaya penyebabnya terlihat.
@@ -619,7 +654,7 @@ int OnInit()
 
    string config_reason="";
    if(!SMCValidateConfiguration(cfg_symbol,SMC_EXECUTION_TF,cfg_risk,
-                                cfg_daily_loss,cfg_cost_verified,
+                                cfg_daily_loss,cfg_cost_verified,cfg_observe_only,
                                 cfg_commission,cfg_slippage,config_reason))
      {
       g_smc_states.Reset(g_smc_setup,ServerNow());
@@ -642,7 +677,7 @@ int OnInit()
    if(!g_smc_displacement.Init(cfg_symbol))      { Print("[SMC] init failed: displacement");  modules_ok=false; }
    if(!g_smc_fvg.Init(cfg_symbol))               { Print("[SMC] init failed: fvg");           modules_ok=false; }
    if(!g_smc_risk.Init(cfg_symbol,cfg_magic,cfg_risk,cfg_daily_loss,
-                       cfg_commission,cfg_slippage,cfg_cost_verified))
+                       cfg_commission,cfg_slippage,cfg_cost_verified,cfg_observe_only))
      { Print("[SMC] init failed: risk  ",SMCDescribeSymbolProperties(cfg_symbol)); modules_ok=false; }
    if(!g_smc_ledger.Init(cfg_symbol,cfg_magic)) { Print("[SMC] init failed: ledger");         modules_ok=false; }
    if(!g_smc_execution.Init(cfg_symbol,cfg_magic)) { Print("[SMC] init failed: execution");   modules_ok=false; }
@@ -680,7 +715,8 @@ int OnInit()
      }
    g_smc_enabled=true;
    g_smc_logger.Write(g_smc_setup,"initialized","INIT",0.0,g_cfg_risk_percent,0,
-                      "research_demo_only_real_account_blocked");
+                      g_cfg_observe_only ? "v2_observe_only_costs_unverified_demo_only_real_account_blocked"
+                                         : "v2_live_mode_costs_verified_demo_only_real_account_blocked");
    return INIT_SUCCEEDED;
   }
 
@@ -689,7 +725,7 @@ void OnDeinit(const int reason)
    EventKillTimer();
    if(g_smc_enabled)
       g_smc_logger.Write(g_smc_setup,"deinitialized",SMCStateName(g_smc_setup.state),
-                         0.0,InpSMCRiskPercent,reason,
+                         0.0,g_cfg_risk_percent,reason,
                          "expert_removed_or_terminal_stopped");
   }
 
@@ -747,7 +783,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
          g_smc_states.Transition(g_smc_setup,SMC_ORDER_PENDING,ServerNow(),"accepted_limit_request_reconciled");
       const string before=SMCStateName(g_smc_setup.state);
       if(g_smc_states.Transition(g_smc_setup,SMC_IN_POSITION,ServerNow(),"deal_fill_confirmed"))
-         g_smc_logger.Write(g_smc_setup,"position_fill",before,0.0,InpSMCRiskPercent,
+         g_smc_logger.Write(g_smc_setup,"position_fill",before,0.0,g_cfg_risk_percent,
                             (int)result.retcode,"actual_deal_entry",profit,commission,swap,fee);
      }
    else
@@ -758,16 +794,16 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
          completed && g_smc_setup.state==SMC_IN_POSITION && g_smc_setup.position_id==position_id)
         {
          g_smc_execution.CancelResidualOrder(g_smc_setup,g_smc_logger,
-                                             "position_lifecycle_closed",InpSMCRiskPercent);
+                                             "position_lifecycle_closed",g_cfg_risk_percent);
          const string before=SMCStateName(g_smc_setup.state);
          if(g_smc_states.Transition(g_smc_setup,SMC_COMPLETED,ServerNow(),"position_lifecycle_closed"))
-            g_smc_logger.Write(g_smc_setup,"position_completed",before,0.0,InpSMCRiskPercent,
+            g_smc_logger.Write(g_smc_setup,"position_completed",before,0.0,g_cfg_risk_percent,
                                (int)result.retcode,"actual_position_lifecycle_pnl",
                                lifecycle_pnl,commission,swap,fee);
         }
       else
           g_smc_logger.Write(g_smc_setup,"deal_recorded",SMCStateName(g_smc_setup.state),
-                             0.0,InpSMCRiskPercent,
+                             0.0,g_cfg_risk_percent,
                             (int)result.retcode,"actual_deal_costs_lifecycle_not_yet_complete",
                             profit,commission,swap,fee);
      }

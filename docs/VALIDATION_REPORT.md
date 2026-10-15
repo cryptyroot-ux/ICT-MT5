@@ -17,9 +17,9 @@ This report distinguishes three kinds of evidence and never mixes them:
 | Item | Status | Evidence |
 |---|---|---|
 | Python 3.12 syntax check of all `.py` | PASS (executed) | `py_compile` over `backtester/`, `docs/`, `scripts/`, `research/`, `tests/` returned no output |
-| Deterministic logic tests | PASS (executed) | `python3 -m unittest discover -s tests` → `Ran 54 tests ... OK` |
+| Deterministic logic tests | PASS (executed 2026-10-16) | `python3 -m unittest discover -s tests` → `Ran 154 tests ... OK` (80 pre-existing + 74 new V2 parity/observe-only guards) |
 | MQL5 static structure checks | PASS (executed) | `tests/test_mql_static.py` (brace/paren balance, include resolution, guard pairing, logger arity, identifier fields, MT4-API leakage) |
-| MetaEditor compile of `SMC_H1M5_SweepFVG.mq5` | **NOT VERIFIED** | No `metaeditor64.exe` found on this host; Wine and `terminal64.exe`/`metatester64.exe` exist under `/opt/mt5`, but a filename search for a MetaEditor binary returned nothing |
+| MetaEditor compile of `SMC_H1M5_SweepFVG.mq5` | PASS (executed 2026-10-16) | `MetaEditor64.exe /portable /compile:MQL5\Experts\Advisors\SMC_H1M5_SweepFVG.mq5 /log` → `Result: 0 errors, 1 warnings`. The single warning is the pre-existing operator-precedence note at `Include/SMC_Liquidity.mqh:187` |
 | Strategy Tester run (real ticks) | **NOT VERIFIED** | Requires a logged-in HFM Pro demo account and the compiled EA |
 | Strategy Tester run (bar model) | **NOT VERIFIED** | Same blockers |
 
@@ -28,6 +28,32 @@ three deliberate defects were injected and each was caught, then reverted:
 dropping a required logger argument at a call site → FAILED; unbalancing a brace in a
 module → FAILED; removing an include-guard `#define` → FAILED. After restoring, the
 suite returned to `OK`.
+
+**Mutation check on the V2 suite (2026-10-16).** Fifteen deliberate defects were injected
+into the V2 reference model and the shipped MQL, and every one was caught:
+
+| Injected defect | Result |
+|---|---|
+| Premium/discount uses `<=` so the current day leaks in | FAILED |
+| Session window includes the forming/decision bar | FAILED |
+| Session window ignores the 200-bar limit | FAILED |
+| Session cache short-circuit removed / keyed on a constant | FAILED |
+| Order gate accepts unverified costs while trading (config or risk manager) | FAILED |
+| Observe-only gate removed from the EA | FAILED |
+| Logger reverted to B3 identity / event file | FAILED |
+| V2 magic replaced by the B3 magic | FAILED |
+| Pending limit fills on Bid instead of Ask | FAILED |
+| Pending expiry treated as inclusive | FAILED |
+| Fill scan includes the submission bar | FAILED |
+| SELL stop uses the wrong sign (MQL and Python) | FAILED |
+| Stop floor removed | FAILED |
+| BOS confirmation not re-based to the bar close | FAILED |
+| Displacement accepted without an internal pivot break | FAILED |
+| Execution recomputes the stop instead of using the final levels | FAILED |
+
+Two further mutants initially **survived** and the tests were strengthened because of
+them: a wrong SELL stop sign was hidden by the $20 floor until a wide-sweep vector was
+added, and the session-cache guard initially only asserted that cache symbols existed.
 
 **Two test-expectation bugs were found and fixed during this work** (fixtures/expected
 values, not production defects): an H1 aggregation fixture that used 24 M5 bars (two
@@ -249,3 +275,38 @@ averaging.
 implemented and statically verified. The *strategy as frozen* is, however, near-untradeable
 on the only real data available, so there is nothing to declare profitable — and the
 blocking issue is a specification decision, not an implementation defect.
+
+
+---
+
+## 9. V2 parity diagnostic (2026-10-16)
+
+`research/v2_parity.py` + `research/results/v2_parity_dev_20261016.json`, executed over
+the DEV window only (2018-07-01 → 2024-04-23 18:05 broker time):
+
+| Item | Value |
+|---|---|
+| M5 bars loaded | 409,194 (burned OOS after the end time is never read) |
+| Causal sweeps enumerated | 37,580 |
+| Rejected: no matching confirmed H1 BOS | 20,428 |
+| Rejected: BOS or sweep outside the 12-bar development window | 16,584 |
+| Rejected: no post-sweep displacement/CHoCH | 495 |
+| Rejected: no three-candle FVG | 14 |
+| Rejected: outside rolling high-conviction session | 14 |
+| Rejected: wrong previous-day premium/discount side | 48 |
+| **Candidates reaching the order stage** | **4** |
+| Filled trades (bar model) | 2 |
+| Expectancy / PF / max DD | +0.99R / 2.98 / 1.01R |
+| 2× cost stress | +0.99R / 2.96 / 1.01R |
+| `acceptance_status` | **INCONCLUSIVE** |
+
+**Interpretation.** Two trades cannot support any conclusion about edge, and this window
+was already used for selection. The numbers exist to prove the repaired model runs
+end-to-end and to record where candidates die; they are **not** a profitability claim.
+The frozen gate (≥100 trades, expectancy ≥ +0.25R, PF ≥ 1.50, max DD < 12%) remains
+unmet and cannot be met retrospectively. Commission is still unverified, so the cost
+figures are assumptions, not broker facts.
+
+Causality is enforced by tests, not by inspection: appending future bars cannot change an
+earlier decision, a fill cannot use a bar that predates its submission, and the
+current-day range can never be used as the premium/discount reference.

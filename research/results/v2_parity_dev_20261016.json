@@ -1,0 +1,116 @@
+{
+  "acceptance_note": "Diagnostic DEV run on selection-affected data. No untouched OOS remains, so the frozen B3 gates cannot be satisfied by this report.",
+  "acceptance_status": "INCONCLUSIVE",
+  "candidates": 4,
+  "config": {
+    "atr_period": 14,
+    "atr_sl_multiplier": 3.0,
+    "daily_loss_percent": 2.0,
+    "displacement_atr": 1.0,
+    "displacement_body_ratio": 0.6,
+    "displacement_close_quartile": 0.25,
+    "equal_level_ticks": 2.0,
+    "max_liquidity_age_bars": 100,
+    "max_reclaim_bars": 3,
+    "max_spread_price": 0.5,
+    "min_sl_price": 20.0,
+    "observe_only": true,
+    "pending_expiry_bars": 6,
+    "pending_expiry_seconds": 1800,
+    "risk_percent": 0.25,
+    "session_lookback_bars": 200,
+    "session_ratio": 1.3,
+    "setup_development_bars": 12,
+    "sweep_threshold_ticks": 2.0,
+    "swing_span": 2,
+    "target_r": 3.0
+  },
+  "cost_assumptions": {
+    "commission_per_lot": 0.0,
+    "commission_status": "UNVERIFIED",
+    "contract_size": 100.0,
+    "note": "Spread comes from each bar's spread_points. Commission and slippage are assumptions until the broker schedule is verified.",
+    "slippage_per_lot": 10.0,
+    "tick_size": 0.01
+  },
+  "cost_stress_2x": {
+    "expectancy_r": 0.989500124343747,
+    "losses": 1,
+    "max_drawdown_r": 1.0100025006251563,
+    "profit_factor": 2.959401335603191,
+    "total_r": 1.979000248687494,
+    "trades": 2,
+    "win_rate": 0.5,
+    "wins": 1
+  },
+  "data": {
+    "first_bar": "2018-07-02 01:00:00",
+    "h1_rows_loaded": 34194,
+    "last_bar": "2024-04-23 18:05:00",
+    "m5_rows_loaded": 409194
+  },
+  "metrics": {
+    "expectancy_r": 0.9945001246562469,
+    "losses": 1,
+    "max_drawdown_r": 1.005001250312578,
+    "profit_factor": 2.979102263498548,
+    "total_r": 1.9890002493124939,
+    "trades": 2,
+    "win_rate": 0.5,
+    "wins": 1
+  },
+  "model_kind": "EXPLORATORY_BAR_MODEL",
+  "oos_claim_permitted": false,
+  "raw_inputs": {
+    "export_manifest_path": "/root/BBMA OMA ALI/data/raw/XAUUSD_HFM_manifest_20261015_022415_482518984.txt",
+    "export_manifest_sha256": "86d6f72c3d4904dda0916c3e6f5f416574ded3ddb3fd32fb12fc4dd312083d92",
+    "h1_path": "/root/BBMA OMA ALI/data/raw/XAUUSD_HFM_H1_20261015_022415_482518984.csv",
+    "h1_sha256": "be2fa5d016c5481c17ff66902e78e9891061af7243964ff683b23ec145dce6f2",
+    "m5_path": "/root/BBMA OMA ALI/data/raw/XAUUSD_HFM_M5_20261015_022415_482518984.csv",
+    "m5_sha256": "7c37bac7d89d0f39af794ffe8f05d7fc66f479b5fc77385378d5e9a8af58d60a"
+  },
+  "rejections": {
+    "bos_or_sweep_stale": 16584,
+    "no_associated_three_candle_fvg": 14,
+    "no_matching_confirmed_h1_bos": 20428,
+    "no_post_sweep_displacement_choch": 495,
+    "v2_outside_rolling_high_conviction_session": 14,
+    "v2_wrong_previous_d1_premium_discount": 48
+  },
+  "strategy": "SMC-H1M5-SweepFVG",
+  "trades": [
+    {
+      "direction": "SELL",
+      "entry_price": 1492.945,
+      "entry_time": 1571139900,
+      "exit_price": 1512.94,
+      "exit_reason": "stop_loss",
+      "exit_time": 1572017400,
+      "gross_r": -1.0,
+      "net_r": -1.005001,
+      "setup_id": "SELL|1492.1500000000|1571136000",
+      "stop_loss": 1512.94,
+      "take_profit": 1432.94
+    },
+    {
+      "direction": "SELL",
+      "entry_price": 1823.675,
+      "entry_time": 1627666800,
+      "exit_price": 1763.68,
+      "exit_reason": "take_profit",
+      "exit_time": 1628268900,
+      "gross_r": 2.999,
+      "net_r": 2.994001,
+      "setup_id": "SELL|1826.2700000000|1627663500",
+      "stop_loss": 1843.68,
+      "take_profit": 1763.68
+    }
+  ],
+  "variant": "V2_PARITY",
+  "window": {
+    "burned_oos_excluded": true,
+    "burned_oos_interval": "2024-04-23..2026-10-15 (previously viewed)",
+    "dev_end": "2024-04-23 18:05:00",
+    "dev_start": "2018-07-01 00:00:00"
+  }
+}

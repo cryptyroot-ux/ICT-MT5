@@ -3,6 +3,16 @@
 
 #define SMC_STRATEGY_NAME "SMC-H1M5-SweepFVG"
 #define SMC_VERSION "1.0.0-research"
+
+//--- Identitas V2 (variant eksperimental, terpisah dari B3 yang dibekukan) -----
+//| B3 tetap memakai SMC_VERSION dan file log lamanya. V2 memakai identitas
+//| sendiri supaya log forward tidak pernah tercampur dengan riwayat B3, dan
+//| supaya magic V2 tidak pernah mengambil alih order milik magic lama.
+#define SMC_V2_VERSION    "2.0.0-parity"
+#define SMC_V2_VARIANT    "V2_PARITY"
+#define SMC_V2_MAGIC      15101602
+#define SMC_V2_EVENT_LOG  "SMC_H1M5_SweepFVG_V2_events.csv"
+#define SMC_RUNTIME_CONFIG_NAME "SMC_V2.cfg"
 #define SMC_CONTEXT_TF PERIOD_H1
 #define SMC_EXECUTION_TF PERIOD_M5
 #define SMC_SWING_SPAN 2
@@ -206,7 +216,8 @@ string SMCMakeSetupId(const string symbol,const SMC_DIRECTION direction,
 
 bool SMCValidateConfiguration(const string symbol,const ENUM_TIMEFRAMES chart_tf,
                               const double risk_percent,const double daily_loss_percent,
-                              const bool cost_model_verified,const double commission_per_lot,
+                              const bool cost_model_verified,const bool observe_only,
+                              const double commission_per_lot,
                               const double slippage_per_lot,string &reason)
   {
    reason="";
@@ -230,9 +241,17 @@ bool SMCValidateConfiguration(const string symbol,const ENUM_TIMEFRAMES chart_tf
       reason="daily_loss_limit_is_frozen_at_2_percent";
       return false;
      }
-   if(!cost_model_verified || commission_per_lot<0.0 || slippage_per_lot<0.0)
+   if(commission_per_lot<0.0 || slippage_per_lot<0.0)
      {
-      reason="verified_nonnegative_cost_model_required";
+      reason="cost_model_must_be_nonnegative";
+      return false;
+     }
+   // Biaya yang belum diverifikasi hanya boleh berjalan dalam observe-only. Tanpa
+   // observe-only, konfigurasi apa pun tidak boleh mengirim order karena net RR
+   // tidak bisa dihitung dengan benar.
+   if(!cost_model_verified && !observe_only)
+     {
+      reason="unverified_cost_model_requires_observe_only";
       return false;
      }
    if(!SymbolSelect(symbol,true))

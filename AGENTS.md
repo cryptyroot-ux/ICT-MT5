@@ -7,8 +7,16 @@
 > (`docs/SOURCE_AUDIT.md`, AUD-001) and must not be attached.
 >
 > The **active** strategy is `SMC-H1M5-SweepFVG`. Before changing anything, read
-> `docs/SMC_H1M5_SWEEPFVG_SPEC.md` (frozen rules) and `docs/VALIDATION_REPORT.md`
-> (evidence status).
+> `docs/SMC_H1M5_SWEEPFVG_SPEC.md` (frozen B3 rules), `docs/SMC_H1M5_SWEEPFVG_V2_SPEC.md`
+> (the experimental V2 contract) and `docs/VALIDATION_REPORT.md` (evidence status).
+>
+> The running build is **V2, observe-only** (magic `15101602`, event log
+> `SMC_H1M5_SweepFVG_V2_events.csv`). B3 stays frozen: its thresholds, its next-liquidity
+> target rule and its magic must not be edited or reused by V2. Broker costs are still
+> unverified, so `COST_VERIFIED=0` may only run with `OBSERVE_ONLY=1`.
+>
+> **The 2024-04-23 → 2026-10-15 XAUUSD interval was viewed during the earlier study and is
+> burned.** It must never be used for parameter selection or reported as out-of-sample.
 >
 > **Superseded statements in this file, which must not be followed:**
 > - "1% per trade" and "1% risk per trade, 0.5% optional tightening" — **replaced** by

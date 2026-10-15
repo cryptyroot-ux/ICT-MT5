@@ -16,6 +16,7 @@ private:
    int      m_day_key;
    string   m_day_state_key;
    bool     m_cost_model_verified;
+   bool     m_observe_only;
    bool     m_state_reliable;
 
    int ServerDayKey(const datetime now) const
@@ -104,12 +105,14 @@ public:
       m_day_key=0;
       m_day_state_key="";
       m_cost_model_verified=false;
+      m_observe_only=true;
       m_state_reliable=false;
      }
 
    bool Init(const string symbol,const long magic,const double risk_percent,
              const double daily_loss_percent,const double commission_round_turn_per_lot,
-             const double slippage_round_turn_per_lot,const bool cost_model_verified)
+             const double slippage_round_turn_per_lot,const bool cost_model_verified,
+             const bool observe_only)
      {
       m_symbol=symbol;
       m_magic=magic;
@@ -118,11 +121,14 @@ public:
       m_commission_round_turn_per_lot=commission_round_turn_per_lot;
       m_slippage_round_turn_per_lot=slippage_round_turn_per_lot;
       m_cost_model_verified=cost_model_verified;
+      m_observe_only=observe_only;
       m_state_reliable=false;
+      // Observe-only boleh inisialisasi supaya telemetry tetap hidup, tetapi biaya
+      // yang belum diverifikasi tetap menutup semua jalur uang di bawah.
       if(symbol=="" || magic<=0 || risk_percent<SMC_MIN_RISK_PERCENT ||
          risk_percent>SMC_MAX_RISK_PERCENT || daily_loss_percent!=SMC_DAILY_LOSS_PERCENT ||
          commission_round_turn_per_lot<0.0 || slippage_round_turn_per_lot<0.0 ||
-         !cost_model_verified)
+         (!cost_model_verified && !observe_only))
          return false;
       datetime now=TimeTradeServer();
       if(now<=0) now=TimeCurrent();

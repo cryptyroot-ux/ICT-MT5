@@ -16,6 +16,9 @@ private:
    string        m_symbol;
    string        m_file_name;
    string        m_config_hash;
+   string        m_variant;
+   string        m_version;
+   bool          m_observe_only;
    SMC_LOG_LEVEL m_level;
 
    string HashConfig(const string canonical) const
@@ -34,20 +37,23 @@ public:
                      CSMCLogger()
      {
       m_symbol="";
-      m_file_name="SMC_H1M5_SweepFVG_events.csv";
+      m_file_name=SMC_V2_EVENT_LOG;
       m_config_hash="";
       m_level=SMC_LOG_INFO;
      }
 
    bool Init(const string symbol,const long magic,const double risk_percent,
              const double spread_limit,const double commission,const double slippage,
-             const bool cost_verified,const SMC_LOG_LEVEL level)
+             const bool cost_verified,const bool observe_only,const SMC_LOG_LEVEL level)
      {
       m_symbol=symbol;
       m_level=level;
-      const string canonical=StringFormat("%s|%s|%s|%s|%I64d|%.4f|%.4f|%.4f|%.4f|%d",
-         SMC_STRATEGY_NAME,SMC_VERSION,m_symbol,"B3",magic,risk_percent,
-         spread_limit,commission,slippage,(int)cost_verified);
+      m_variant=SMC_V2_VARIANT;
+      m_version=SMC_V2_VERSION;
+      m_observe_only=observe_only;
+      const string canonical=StringFormat("%s|%s|%s|%s|%I64d|%.4f|%.4f|%.4f|%.4f|%d|%d",
+         SMC_STRATEGY_NAME,m_version,m_symbol,m_variant,magic,risk_percent,
+         spread_limit,commission,slippage,(int)cost_verified,(int)observe_only);
       m_config_hash=HashConfig(canonical);
 
       const int handle=FileOpen(m_file_name,FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
@@ -69,6 +75,8 @@ public:
      }
 
    string ConfigHash() const { return m_config_hash; }
+   string Variant() const { return m_variant; }
+   string LogFileName() const { return m_file_name; }
 
    void Write(const SMC_SETUP &setup,const string event,const string state_before,
               const double spread,const double risk_percent,const int retcode,
@@ -87,7 +95,7 @@ public:
       datetime now=TimeTradeServer();
       if(now<=0) now=TimeCurrent();
       FileWrite(handle,TimeToString(now,TIME_DATE|TIME_SECONDS),m_symbol,SMC_STRATEGY_NAME,
-                SMC_VERSION,"B3",m_config_hash,setup.setup_id,event,state_before,
+                m_version,m_variant,m_config_hash,setup.setup_id,event,state_before,
                 SMCStateName(setup.state),SMCDirectionName(setup.direction),
                 DoubleToString(setup.h1_bos_level,8),TimeToString(setup.h1_bos_confirmation,TIME_DATE|TIME_SECONDS),
                 DoubleToString(setup.liquidity_level,8),DoubleToString(setup.sweep_extreme,8),

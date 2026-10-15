@@ -20,24 +20,70 @@
 #define SMC_V2_SESSION_RATIO        1.30   // sama dengan ambang bobot gold di ICT_EA
 #define SMC_V2_FIXED_TP_R           3.0   // TP tetap 3R, bukan next-liquidity-target
 
-//--- Lantai SL -----------------------------------------------------------------
-//| Kembalikan jarak SL yang dimeulkan. Memperlebar SL hanya aman ke arah
+
+//---Proteksi final V2 ---------------------------------------------------------
+//| Satu-satunya sumber kebenaran SL/TP V2. Rumus mentah B3 (extremum sweep +/-0.5
+//| ATR) TIDAK boleh dipakai di sini: SELL memakai tanda PLUS sehingga stop berada
+//| di atas high sweep, dan jarak $SMC_V2_MIN_SL_PRICE harus memperlebar SL ke arah
 //| proteksi (BUY ke bawah, SELL ke atas).
-double SMC_WidenedStopDistance(const double sweep_distance,const double atr_value)
+bool SMC_ProtectionLevels(const SMC_DIRECTION direction,const double entry,
+                          const double sweep_extreme,const double atr_value,
+                          const double tick_size,double &stop,double &target)
   {
-   const double floor_price=MathMax(SMC_V2_MIN_SL_PRICE,SMC_V2_ATR_SL_MULTIPLIER*atr_value);
-   return MathMax(sweep_distance,floor_price);
+   stop=0.0;
+   target=0.0;
+   if(direction!=SMC_DIRECTION_BUY && direction!=SMC_DIRECTION_SELL)
+      return false;
+   if(entry<=0.0 || atr_value<=0.0 || tick_size<=0.0 || !MathIsValidNumber(entry) ||
+      !MathIsValidNumber(sweep_extreme) || !MathIsValidNumber(atr_value))
+      return false;
+
+   const bool is_buy=(direction==SMC_DIRECTION_BUY);
+   const double raw_stop=(is_buy ? sweep_extreme-0.5*atr_value : sweep_extreme+0.5*atr_value);
+   const double raw_distance=MathAbs(entry-raw_stop);
+   const double floor_distance=MathMax(SMC_V2_MIN_SL_PRICE,SMC_V2_ATR_SL_MULTIPLIER*atr_value);
+   const double distance=MathMax(raw_distance,floor_distance);
+   if(distance<=0.0)
+      return false;
+
+   const double stop_price=(is_buy ? entry-distance : entry+distance);
+   const double target_price=(is_buy ? entry+SMC_V2_FIXED_TP_R*distance
+                                     : entry-SMC_V2_FIXED_TP_R*distance);
+   stop=SMCRoundToTick(stop_price,tick_size);
+   target=SMCRoundToTick(target_price,tick_size);
+   return (stop>0.0 && target>0.0);
+  }
+
+//--- Self-test golden vector (dipakai saat init, sebelum EA boleh berjalan) ----
+//| Nilai yang sama persis dengan research/v2_parity.protection_levels, jadi
+//| regresi pembulatan atau tanda di MQL langsung ketahuan.
+bool SMC_V2ProtectionSelfTest()
+  {
+   double buy_stop=0.0,buy_target=0.0,sell_stop=0.0,sell_target=0.0;
+   if(!SMC_ProtectionLevels(SMC_DIRECTION_BUY,2000.0,1995.0,2.0,0.01,buy_stop,buy_target))
+      return false;
+   if(!SMC_ProtectionLevels(SMC_DIRECTION_SELL,2000.0,2005.0,2.0,0.01,sell_stop,sell_target))
+      return false;
+   const double tolerance=0.0001;
+   return (MathAbs(buy_stop-1980.0)<tolerance && MathAbs(buy_target-2060.0)<tolerance &&
+           MathAbs(sell_stop-2020.0)<tolerance && MathAbs(sell_target-1940.0)<tolerance);
   }
 
 //--- Filter sesi ---------------------------------------------------------------
 //| Ambang 1.30x rerata(range) per jam. Bila tidak ada jam yang lolos, ambang
 //| itu akan men-disable EA sepenuhnya, jadi gagal itu dilaporkan lewat nilainya
 //| sendiri dan TIDAK disamarkan jadi "semua jam".
-bool SMC_SessionAllowed(const string symbol)
+//| Jendela hanya bar M5 yang SUDAH tertutup (shift 1..200). Versi lama memakai
+//| shift 0 sehingga bar yang masihforming ikut masuk dan tidak paritas dengan
+//| model Python.
+bool SMC_SessionAllowed(const string symbol,const datetime decision_bar_time)
   {
+   if(decision_bar_time<=0)
+      return false;
+
    MqlRates rates[];
    const int needed=200;
-   const int copied=CopyRates(symbol,PERIOD_M5,0,needed,rates);
+   const int copied=CopyRates(symbol,PERIOD_M5,1,needed,rates);
    if(copied<needed)
       return false;
 
@@ -69,11 +115,31 @@ bool SMC_SessionAllowed(const string symbol)
       return false;
 
    const double mean=total/total_count;
-   MqlDateTime now;
-   TimeToStruct(TimeCurrent(),now);
-   if(now.hour<0 || now.hour>23)
+   MqlDateTime decision;
+   TimeToStruct(decision_bar_time,decision);
+   if(decision.hour<0 || decision.hour>23)
       return false;
-   return (hour_mean[now.hour]>=mean*SMC_V2_SESSION_RATIO);
+   return (hour_mean[decision.hour]>=mean*SMC_V2_SESSION_RATIO);
+  }
+
+//--- Cache sesi per bar keputusan ---------------------------------------------
+//| Jendela 200 bar tidak berubah di dalam satu bar M5, jadi nilainya dihitung
+//| satu kali per bar keputusan. Tanpa cache, filter ini membaca 200 bar pada
+//| setiap tick.
+datetime g_smc_session_cache_bar=0;
+bool     g_smc_session_cache_valid=false;
+bool     g_smc_session_cache_value=false;
+
+bool SMC_SessionAllowedCached(const string symbol,const datetime decision_bar_time)
+  {
+   if(decision_bar_time<=0)
+      return false;
+   if(g_smc_session_cache_valid && g_smc_session_cache_bar==decision_bar_time)
+      return g_smc_session_cache_value;
+   g_smc_session_cache_value=SMC_SessionAllowed(symbol,decision_bar_time);
+   g_smc_session_cache_bar=decision_bar_time;
+   g_smc_session_cache_valid=true;
+   return g_smc_session_cache_value;
   }
 
 //--- Premium/discount D1 -------------------------------------------------------

@@ -192,14 +192,18 @@ public:
 
       const double raw_entry=(setup.fvg_lower+setup.fvg_upper)*0.5;
       setup.entry_price=NormalizeDouble(SMCRoundToTick(raw_entry,tick_size),(int)digits);
-      // BUY stop rounds down and SELL stop rounds up so tick normalization never tightens protection.
-      if(setup.direction==SMC_DIRECTION_BUY)
-         setup.stop_loss=NormalizeDouble(SMCFloorToTick(setup.sweep_extreme-0.5*setup.atr_value,tick_size),(int)digits);
-      else
-         setup.stop_loss=NormalizeDouble(SMCCeilToTick(setup.sweep_extreme+0.5*setup.atr_value,tick_size),(int)digits);
-      setup.take_profit=NormalizeDouble((setup.direction==SMC_DIRECTION_BUY ?
-                         SMCFloorToTick(setup.take_profit,tick_size) :
-                         SMCCeilToTick(setup.take_profit,tick_size)),(int)digits);
+      //--- V2: SL/TP sudah final dihitung sebelum sampai sini ------------------
+      //| Modul ini hanya memvalidasi dan membulatkan ke tick. Nilai TIDAK boleh
+      //| dihitung ulang dari rumus B3: dulu baris ini menimpa stop yang sudah
+      //| diperlebar sehingga lantai risiko V2 hilang tepat sebelum order dikirim.
+      if(!(setup.stop_loss>0.0 && setup.take_profit>0.0))
+        {
+         logger.Write(setup,"order_rejected","WAIT_RETRACE_OR_ORDER",spread,risk_percent,0,
+                      "v2_final_protection_levels_missing");
+         return false;
+        }
+      setup.stop_loss=NormalizeDouble(SMCRoundToTick(setup.stop_loss,tick_size),(int)digits);
+      setup.take_profit=NormalizeDouble(SMCRoundToTick(setup.take_profit,tick_size),(int)digits);
 
       if(setup.direction==SMC_DIRECTION_BUY && !(setup.stop_loss<setup.entry_price &&
          setup.entry_price<setup.take_profit && setup.entry_price<tick.ask))

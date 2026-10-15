@@ -1,5 +1,48 @@
 # Changelog — ICT-MT5
 
+## [SMC 2.0.0-parity (V2)] — 2026-10-16
+
+Experimental V2 variant of the same structural strategy. B3 (`1.0.0-research`) is frozen
+and unchanged. V2 exists because the shipped EA and the reference study disagreed in ways
+that produced a false positive; this release repairs causality and execution parity and
+ships **observe-only**.
+
+### Added
+
+- `research/v2_parity.py` — causal V2 reference model: previous-completed-day
+  premium/discount, closed-bar rolling session, sweep/CHoCH/FVG enumeration, midpoint
+  pending fill with Bid/Ask touches, symmetric protection, and an exploratory DEV runner
+  that never reads past its end timestamp.
+- `tests/test_v2_parity.py` — 74 tests: causality invariants, fill/expiry semantics,
+  symmetric protection, V2 identity, observe-only gating, and MQL/Python golden vectors.
+- `docs/SMC_H1M5_SWEEPFVG_V2_SPEC.md` — V2 contract, including the shared protection
+  golden vector.
+
+### Changed
+
+- `Include/SMC_Filters.mqh` — added `SMC_ProtectionLevels` (single source of truth for
+  stop/target, correct SELL sign, floor widening) and `SMC_V2ProtectionSelfTest`; session
+  filter now reads 200 **closed** bars and is cached per decision bar; removed the
+  superseded `SMC_WidenedStopDistance`.
+- `Include/SMC_Execution.mqh` — `SubmitMidpointLimit` no longer overwrites the widened
+  stop with the raw B3 formula; it validates and rounds the supplied final levels.
+- `Include/SMC_Config.mqh` — V2 identity constants; unverified costs are accepted only
+  together with observe-only.
+- `Include/SMC_RuntimeConfig.mqh` — `OBSERVE_ONLY` key.
+- `Include/SMC_RiskManager.mqh` — observe-only may initialise; all money paths stay
+  fail-closed while costs are unverified.
+- `Include/SMC_Logger.mqh` — writes `V2_PARITY` to its own CSV.
+- `Experts/SMC_H1M5_SweepFVG.mq5` — V2 magic, observe-only input and gate, init
+  self-test, cached session call, fixed 3R target with no next-liquidity retarget, and
+  runtime logs that report the effective config instead of raw inputs.
+
+### Evidence
+
+- `python3 -m unittest discover -s tests` → 154 tests OK.
+- MetaEditor compile → 0 errors, 1 pre-existing warning.
+- DEV diagnostic: 4 candidates, 2 filled trades, `acceptance_status=INCONCLUSIVE`.
+  The 2024-04..2026-10 interval stays burned.
+
 ## [SMC 1.0.0-research] — 2026-10-15
 
 Fork of `MB-Ndhlovu/ICT-MT5` at `e1d1a80bee2454ef507f89c69256036a0a97dd5e`
