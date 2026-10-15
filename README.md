@@ -92,7 +92,9 @@ All frozen acceptance gates remain **INCONCLUSIVE**. See `docs/VALIDATION_REPORT
 > **Supervisor:** Malibongwe Ndhlovu
 > **Execution:** MetaTrader 5 / MQL5
 > **Target Markets:** XAUUSD, NAS100, US30
-> **Risk Model:** 1% per trade, 2% daily loss cap
+> **Risk Model (LEGACY BASELINE ONLY — do not copy):** 1% per trade, 2% daily loss cap.
+> The active `SMC-H1M5-SweepFVG` strategy uses **0.25 %–0.50 % per trade, default
+> 0.50 %**, with a 2 % daily cap. See `AGENTS.md` and `docs/SMC_H1M5_SWEEPFVG_SPEC.md`.
 
 ## Overview
 

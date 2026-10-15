@@ -163,3 +163,45 @@ def split_args(text):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StaleInstructionGuardTests(unittest.TestCase):
+    """Agent-facing files must keep their superseded markers.
+
+    These files drive automated revisions; an unmarked stale rule (e.g. "1% risk
+    per trade") can silently override the frozen specification on a later change.
+    Each anchor is a distinctive phrase so that deleting the marker actually fails,
+    rather than passing on some unrelated occurrence of the word.
+    """
+
+    ANCHORS = {
+        "AGENTS.md": "PARTIALLY SUPERSEDED",
+        "PROJECT_PLAN.md": "SUPERSEDED — historical planning record only",
+        "CONTRIBUTING.md": "Scope note",
+        "TEST_REPORT.md": "LEGACY BASELINE — not the SMC strategy",
+        "README.md": "LEGACY BASELINE ONLY",
+    }
+
+    def test_superseded_markers_are_present(self):
+        for name, anchor in self.ANCHORS.items():
+            with self.subTest(file=name):
+                self.assertIn(
+                    anchor,
+                    (REPO / name).read_text(encoding="utf-8"),
+                    f"{name} lost its superseded marker; stale rules could be followed again",
+                )
+
+    def test_active_routing_map_states_the_frozen_risk_range(self):
+        text = (REPO / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn("0.25", text)
+        self.assertIn("0.50", text)
+        self.assertIn("SMC_H1M5_SWEEPFVG_SPEC.md", text)
+
+    def test_frozen_thresholds_are_not_restated_differently_in_active_docs(self):
+        # Any doc that mentions the expectancy threshold must also state the
+        # non-negotiable no-relaxation rule, so a future edit cannot lower it quietly.
+        for name in ("AGENTS.md", "CONTRIBUTING.md"):
+            text = (REPO / name).read_text(encoding="utf-8")
+            if "+0.25R" in text or "0.25R" in text:
+                with self.subTest(file=name):
+                    self.assertRegex(text, r"never be relaxed|must not be relaxed|never be averaged")
